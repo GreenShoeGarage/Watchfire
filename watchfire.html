@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- WATCHFIRE :: watchfire.html :: v1.7.0 -->
+<!-- WATCHFIRE :: watchfire.html :: v1.8.0 -->
 <html lang="en" data-theme="night">
 <head>
 <meta charset="utf-8">
@@ -2340,11 +2340,25 @@ const BLE_LOGRADIO_LEGACY = '6c6fd238-78fa-436b-aacf-15c5be1ef2e2';
 const BLE_HEARTBEAT_MS = 15000;
 
 class BleTransport {
-  constructor(device) {
+  constructor(device, opts) {
+    opts = opts || {};
     this.kind = 'ble';
     /* GATT hands over whole messages, so nothing here is framed. */
     this.framed = false;
     this.device = device;
+    /* The log characteristic is chatty. A busy ESP32 will notify a line at a
+       time, up to 512 bytes each, while the drain loop is also reading. On a
+       connection negotiated for low power that is enough traffic to miss the
+       six second supervision window and lose the link, so it is off unless
+       asked for. Real clients treat it as a debug option too. */
+    this.enableLog = !!opts.enableLog;
+    /* A timeline of what the link did, so a premature close can be read
+       rather than guessed at. This is the whole point of the panel in
+       station 01. */
+    this.events = [];
+    this.openedAt = 0;
+    this.lastWriteAt = 0;
+    this.lastReadAt = 0;
     this.onData = function () {};
     this.onMessage = function () {};
     this.onLog = function () {};
@@ -2362,13 +2376,19 @@ class BleTransport {
     return typeof navigator !== 'undefined' && !!navigator.bluetooth;
   }
 
-  static async request() {
+  static async request(opts) {
     if (!BleTransport.supported) throw new Error('this browser does not expose navigator.bluetooth');
     const device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [BLE_SERVICE] }],
       optionalServices: [BLE_SERVICE]
     });
-    return new BleTransport(device);
+    return new BleTransport(device, opts);
+  }
+
+  _note(kind, detail) {
+    const at = this.openedAt ? Date.now() - this.openedAt : 0;
+    this.events.push({ at: at, kind: kind, detail: detail || '' });
+    if (this.events.length > 240) this.events.shift();
   }
 
   /* Chrome rejects concurrent GATT operations, so every one of them goes
@@ -2380,13 +2400,22 @@ class BleTransport {
   }
 
   async open() {
+    this.openedAt = Date.now();
     this._onDrop = () => {
       if (!this._open) return;
       this._open = false;
-      this.onClose('the radio dropped the bluetooth link');
+      const sinceWrite = this.lastWriteAt ? Math.round((Date.now() - this.lastWriteAt) / 1000) : null;
+      const sinceRead = this.lastReadAt ? Math.round((Date.now() - this.lastReadAt) / 1000) : null;
+      const elapsed = Math.round((Date.now() - this.openedAt) / 1000);
+      this._note('drop', elapsed + ' s after connect, ' +
+        (sinceWrite === null ? 'nothing ever written' : sinceWrite + ' s since the last write') + ', ' +
+        (sinceRead === null ? 'nothing ever read' : sinceRead + ' s since the last read'));
+      this.onClose('the radio dropped the bluetooth link ' + elapsed + ' s after connect' +
+        (sinceWrite === null ? '' : ', ' + sinceWrite + ' s after the last thing we sent it'));
     };
     this.device.addEventListener('gattserverdisconnected', this._onDrop);
 
+    this._note('connect', 'requesting GATT');
     this.server = await this.device.gatt.connect();
     /* Pairing happens somewhere in here if it is going to. Give it a moment
        rather than racing it into service discovery, because a refused bond
@@ -2395,7 +2424,9 @@ class BleTransport {
     if (!this.device.gatt.connected) {
       throw new Error('the radio accepted the connection then dropped it, which is the pairing handshake failing. Pair it in your operating system bluetooth settings first, using the passkey shown on the radio.');
     }
+    this._note('paired', 'still connected after the pairing window');
     const svc = await this.server.getPrimaryService(BLE_SERVICE);
+    this._note('services', 'found the Meshtastic service');
     this.chars.toRadio = await svc.getCharacteristic(BLE_TORADIO);
     this.chars.fromRadio = await svc.getCharacteristic(BLE_FROMRADIO);
     this.chars.fromNum = await svc.getCharacteristic(BLE_FROMNUM);
@@ -2409,18 +2440,24 @@ class BleTransport {
       this.drain();
     });
     await this.chars.fromNum.startNotifications();
+    this._note('subscribe', 'FromNum notifications on');
 
     /* The debug lane survives over BLE on its own characteristic. Optional:
        older firmware exposes it under a different id, and some builds not at
        all, so a missing one is not an error. */
-    for (const id of [BLE_LOGRADIO, BLE_LOGRADIO_LEGACY]) {
-      try {
-        const ch = await svc.getCharacteristic(id);
-        ch.addEventListener('characteristicvaluechanged', (e) => this._onLogValue(e.target.value));
-        await ch.startNotifications();
-        this.chars.logRadio = ch;
-        break;
-      } catch (e) { /* not present on this build */ }
+    if (this.enableLog) {
+      for (const id of [BLE_LOGRADIO, BLE_LOGRADIO_LEGACY]) {
+        try {
+          const ch = await svc.getCharacteristic(id);
+          ch.addEventListener('characteristicvaluechanged', (e) => this._onLogValue(e.target.value));
+          await ch.startNotifications();
+          this.chars.logRadio = ch;
+          this._note('subscribe', 'log characteristic on, which is a lot of traffic');
+          break;
+        } catch (e) { /* not present on this build */ }
+      }
+    } else {
+      this._note('skip', 'log characteristic left alone to keep the link quiet');
     }
     this.drain();
   }
@@ -2452,6 +2489,7 @@ class BleTransport {
         while (this._open) {
           const view = await this._gatt(() => this.chars.fromRadio.readValue());
           this.stats.reads++;
+          this.lastReadAt = Date.now();
           if (!view || !view.byteLength) { this.stats.empties++; break; }
           const bytes = new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
           this.stats.messages++;
@@ -2460,6 +2498,7 @@ class BleTransport {
       } catch (err) {
         if (this._open) {
           this._open = false;
+          this._note('error', 'read failed: ' + (err && err.message ? err.message : err));
           this.onClose('read failed: ' + (err && err.message ? err.message : err));
         }
       }
@@ -2476,6 +2515,8 @@ class BleTransport {
     }
     await this._gatt(() => this.chars.toRadio.writeValue(bytes));
     this.stats.writes++;
+    this.lastWriteAt = Date.now();
+    this._note('write', bytes.length + ' bytes out');
     /* A write usually produces an answer, and a notify for it can arrive
        before the write settles, so drain unconditionally afterwards. */
     this.drain();
@@ -2483,6 +2524,7 @@ class BleTransport {
 
   async close() {
     this._open = false;
+    this._note('close', 'closed by the operator');
     try { if (this._onDrop) this.device.removeEventListener('gattserverdisconnected', this._onDrop); } catch (e) {}
     try { if (this.chars.fromNum) await this.chars.fromNum.stopNotifications(); } catch (e) {}
     try { if (this.device.gatt.connected) this.device.gatt.disconnect(); } catch (e) {}
@@ -3218,7 +3260,7 @@ async function decryptPayload(psk, packetId, fromNode, cipherBytes) {
    after it, and no eval, ever.
    ========================================================================== */
 
-const VERSION = '1.7.0';
+const VERSION = '1.8.0';
 const BUILD_NOTE = 'All twelve stations are built. Serial and bluetooth have both reached a real radio, a LILYGO T-Lora Pager, on 2026-08-11. Most behaviour beyond the handshake is still unconfirmed.';
 
 function el(tag, attrs) {
@@ -3255,6 +3297,7 @@ const APP = {
   wire: [],
   wireCap: 240,
   redrawTimer: null,
+  bleLog: false,
   simFaults: { splitFrames: true, debugChatter: true, malformedRun: false, passkeyExpires: false, dropHeartbeat: false },
   channelDraft: null,
   configDraft: null,
@@ -3472,6 +3515,48 @@ function showAbout() {
    ========================================================================== */
 
 /* ---- connection plumbing shared by LINK and SIMULATOR ---- */
+/* A bluetooth link will drop. That is not an exceptional condition, it is
+   Tuesday, so it is handled rather than reported and abandoned. Backoff is
+   capped and attempts are finite: an instrument that reconnects forever in a
+   background tab is a battery bug. */
+const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 15000, 15000, 30000, 30000];
+const RECONNECT = { enabled: true, attempt: 0, timer: null, deliberate: false, lastError: '' };
+
+function cancelReconnect() {
+  if (RECONNECT.timer) clearTimeout(RECONNECT.timer);
+  RECONNECT.timer = null;
+  RECONNECT.attempt = 0;
+}
+
+function scheduleReconnect(reason) {
+  if (!RECONNECT.enabled || RECONNECT.deliberate) return false;
+  const t = APP.transport;
+  if (!t || t.kind !== 'ble' || !t.device) return false;
+  if (RECONNECT.attempt >= RECONNECT_BACKOFF_MS.length) {
+    toast('Gave up reconnecting after ' + RECONNECT.attempt + ' attempts.', 'bad');
+    return false;
+  }
+  const wait = RECONNECT_BACKOFF_MS[RECONNECT.attempt];
+  RECONNECT.attempt++;
+  RECONNECT.lastError = reason || '';
+  const device = t.device;
+  const enableLog = !!t.enableLog;
+  RECONNECT.timer = setTimeout(async () => {
+    RECONNECT.timer = null;
+    if (RECONNECT.deliberate) return;
+    try {
+      /* Same device object, so no chooser and no user gesture is needed. The
+         browser already holds permission for this one. */
+      await beginSession(new BleTransport(device, { enableLog: enableLog }), { reconnecting: true });
+    } catch (err) {
+      scheduleReconnect((err && err.message) ? err.message : String(err));
+      paint();
+    }
+  }, wait);
+  toast('Link lost. Reconnecting in ' + (wait / 1000) + ' s, attempt ' + RECONNECT.attempt + '.');
+  return true;
+}
+
 let wireSampler = null;
 let wireLast = { bytesIn: 0, frames: 0, strayBytes: 0, resyncs: 0, oversize: 0 };
 
@@ -3521,7 +3606,11 @@ function wireSession(session) {
     setStatus(s.state, map[s.state] || s.state);
     if (s.state === 'ready') toast('Radio ready. ' + session.nodes.size + ' nodes, ' + session.channels.filter(Boolean).length + ' channels, ' + session.config.size + ' config sections read.', 'ok');
     if (s.state === 'error') toast(s.detail || 'link fault', 'bad');
-    if (s.state === 'closed' && s.detail) toast('Link closed: ' + s.detail);
+    if (s.state === 'ready') { cancelReconnect(); }
+    if (s.state === 'closed' && s.detail) {
+      if (!scheduleReconnect(s.detail)) toast('Link closed: ' + s.detail);
+    }
+    if (s.state === 'error' && APP.transport && APP.transport.kind === 'ble') scheduleReconnect(s.detail);
     paint();
   });
   session.on('node', schedulePaint);
@@ -3557,7 +3646,10 @@ async function connectSerial() {
   await beginSession(new SerialTransport(port, baud));
 }
 
-async function beginSession(transport) {
+async function beginSession(transport, opts) {
+  opts = opts || {};
+  RECONNECT.deliberate = false;
+  if (!opts.reconnecting) cancelReconnect();
   if (APP.session && APP.session.state === 'ready') { try { await APP.session.disconnect(); } catch (e) {} }
   const s = new RadioSession();
   APP.session = s;
@@ -3574,6 +3666,8 @@ async function beginSession(transport) {
 }
 
 async function endSession() {
+  RECONNECT.deliberate = true;
+  cancelReconnect();
   stopWireSampler();
   if (APP.session) await APP.session.disconnect();
   paint();
@@ -3602,7 +3696,7 @@ function stationLink() {
           return;
         }
         try {
-          const t = await BleTransport.request();
+          const t = await BleTransport.request({ enableLog: APP.bleLog });
           await beginSession(t);
         } catch (err) {
           const msg = (err && err.message) ? err.message : String(err);
@@ -3619,6 +3713,13 @@ function stationLink() {
   }
   if (APP.transport && (APP.transport.kind === 'sim' || APP.transport.kind === 'simble')) {
     p0.inner.append(el('div', { class: 'warnbox' }, 'You are talking to the simulator, not a radio. Everything below is synthetic. Station 12 controls what it does to you.'));
+  }
+  if (RECONNECT.timer) {
+    p0.inner.append(el('div', { class: 'warnbox' },
+      'Reconnecting, attempt ' + RECONNECT.attempt + ' of ' + RECONNECT_BACKOFF_MS.length + '.' +
+      (RECONNECT.lastError ? ' Last close: ' + RECONNECT.lastError : ''),
+      el('div', { class: 'row', style: 'margin-top:8px' },
+        el('button', { class: 'btn', onclick: () => { cancelReconnect(); paint(); } }, 'Stop trying'))));
   }
   if (APP.transport && APP.transport.kind === 'ble') {
     p0.inner.append(el('div', { class: 'okbox' },
@@ -3643,6 +3744,34 @@ function stationLink() {
     p1.inner.append(el('p', { class: 'note' },
       'A notify on FromNum says something is waiting but not how much, so FromRadio is read until it comes back empty. Those empty reads are the end of each drain and are counted rather than hidden. FromRadio is never subscribed to: firmware carries an explicit warning that adding notify to it breaks compatibility.'));
     wrap.append(p1);
+
+    /* The link timeline. If the link keeps closing early, this is the panel
+       that says what it was doing when it went, rather than leaving you to
+       guess between an idle timeout, a busy link and a refused bond. */
+    const p1b = panel('Link timeline', APP.transport.events.length + ' events');
+    const con = el('div', { class: 'console' });
+    APP.transport.events.slice(-40).forEach(ev => {
+      con.append(el('div', null,
+        el('span', { class: 't' }, (ev.at / 1000).toFixed(1) + ' s'),
+        el('span', { class: 'tagline ' + (ev.kind === 'drop' || ev.kind === 'error' ? 'bad' : ev.kind === 'write' ? 'tx' : '') }, ev.kind),
+        ' ' + ev.detail));
+    });
+    if (!APP.transport.events.length) con.append(el('div', { class: 't' }, 'nothing yet'));
+    p1b.inner.append(con);
+    p1b.inner.append(el('div', { class: 'row', style: 'margin-top:10px' },
+      el('label', { class: 'check' },
+        el('input', {
+          type: 'checkbox', checked: !!APP.bleLog,
+          onchange: e => { APP.bleLog = e.target.checked; toast('Applies on the next connection.'); }
+        }), 'Listen to the log characteristic'),
+      el('label', { class: 'check' },
+        el('input', {
+          type: 'checkbox', checked: RECONNECT.enabled,
+          onchange: e => { RECONNECT.enabled = e.target.checked; if (!e.target.checked) cancelReconnect(); }
+        }), 'Reconnect automatically')));
+    p1b.inner.append(el('p', { class: 'note' },
+      'The log characteristic notifies a line at a time while the drain loop is also reading. On a link negotiated for low power that is enough traffic to miss the six second supervision window, so it is off unless you ask for it. If the link survives with it off and dies with it on, that is your answer.'));
+    wrap.append(p1b);
   } else {
     const p1 = panel('The wire', s ? (APP.transport && APP.transport.kind === 'sim' ? 'simulated lane' : 'serial lane') : '');
     p1.inner.append(el('div', { class: 'wire', id: 'wire' }, el('span', { class: 'idle' }, 'no link')));
@@ -6827,18 +6956,31 @@ async function runSelfTest(report) {
     return 'ack in ' + (entry.ack.at - entry.t) + ' ms';
   });
 
-  await ta('bluetooth', 'the debug lane arrives on its own characteristic', async () => {
+  await ta('bluetooth', 'the debug lane is off by default and arrives whole when asked for', async () => {
+    /* Left on, the log characteristic notifies a line at a time while the
+       drain loop is also reading, which is enough traffic to cost the link.
+       So the default is off, and the default has to be asserted. */
+    const quiet = new SimBleDevice({ faults: { splitFrames: false, debugChatter: true } });
+    const qt = new BleTransport(quiet);
+    const qs = new RadioSession();
+    await qs.connect(qt);
+    let d0 = Date.now() + 8000;
+    while (qs.state !== 'ready' && Date.now() < d0) await sleep(40);
+    eq(qs.debugLines.length, 0, 'nothing must be subscribed to the log characteristic by default');
+    ok(qt.events.some(e => e.kind === 'skip'), 'and the link timeline must record that it was skipped');
+    await qs.disconnect();
+
     const dev = new SimBleDevice({ faults: { splitFrames: false, debugChatter: true } });
-    const t = new BleTransport(dev);
+    const t = new BleTransport(dev, { enableLog: true });
     const s = new RadioSession();
     await s.connect(t);
     const deadline = Date.now() + 8000;
     while (s.state !== 'ready' && Date.now() < deadline) await sleep(40);
-    ok(s.debugLines.length > 0, 'log lines must reach the debug lane, got ' + s.debugLines.length);
+    ok(s.debugLines.length > 0, 'log lines must reach the debug lane when asked for, got ' + s.debugLines.length);
     ok(s.debugLines.some(d => d.line.indexOf('Config sent') >= 0), 'and be whole lines rather than fragments');
     eq(s.deframer.stats.strayBytes, 0, 'log text must not have gone through the byte lane');
     await s.disconnect();
-    return s.debugLines.length + ' lines off the log characteristic';
+    return 'off by default, ' + s.debugLines.length + ' lines when enabled';
   });
 
   await ta('bluetooth', 'a radio that accepts then drops the link is reported as a pairing failure', async () => {
@@ -6851,6 +6993,26 @@ async function runSelfTest(report) {
     ok(threw, 'connect must fail rather than sitting in handshake');
     ok(/pairing/i.test(threw.message), 'and name pairing as the likely cause, got: ' + threw.message);
     return 'reported as pairing';
+  });
+
+  await ta('bluetooth', 'a dropped link records when it went and what came before it', async () => {
+    const dev = new SimBleDevice({ faults: { splitFrames: false, debugChatter: false } });
+    const t = new BleTransport(dev);
+    const s = new RadioSession();
+    let closed = null;
+    s.on('state', x => { if (x.state === 'closed') closed = x.detail; });
+    await s.connect(t);
+    const deadline = Date.now() + 8000;
+    while (s.state !== 'ready' && Date.now() < deadline) await sleep(40);
+    dev.gatt.disconnect();
+    await sleep(120);
+    const drop = t.events.filter(e => e.kind === 'drop')[0];
+    ok(drop, 'the drop must be on the timeline');
+    ok(/after connect/.test(drop.detail), 'with how long the link lasted');
+    ok(/since the last write/.test(drop.detail), 'and how long since we last said anything');
+    ok(closed && /after connect/.test(closed), 'and the session must be told the same, got: ' + closed);
+    ok(t.events.some(e => e.kind === 'write'), 'writes must be on the timeline too, for comparison');
+    return 'timeline holds ' + t.events.length + ' events';
   });
 
   t('bluetooth', 'the GATT identifiers match the firmware header', () => {

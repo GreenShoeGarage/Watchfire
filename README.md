@@ -1,6 +1,6 @@
 # WATCHFIRE
 
-**FI-220 :: v1.7.0**
+**FI-220 :: v1.8.0**
 
 A bench for your Meshtastic radio, in one file.
 
@@ -105,7 +105,18 @@ visible in the instrument rather than papered over:
   subscribed, and a notify says something is waiting but not how much, so
   `FromRadio` is read until it returns zero bytes.
 - **The debug lane survives**, on its own characteristic, decoded as a `LogRecord`
-  where firmware sends one and as plain text where it does not.
+  where firmware sends one and as plain text where it does not. It is **off by
+  default**: that characteristic notifies a line at a time, up to 512 bytes each,
+  while the drain loop is also reading, and on a link negotiated for low power
+  that is enough traffic to miss the six second supervision window. Turn it on in
+  station 01, and if the link survives with it off and dies with it on, that is
+  your answer.
+- **A link timeline** in station 01 records what the link was doing when it went:
+  connect, pairing window, service discovery, subscriptions, every write, and the
+  drop with how long it lasted and how long since the last thing we sent it.
+- **Reconnect is automatic** over bluetooth, capped backoff of 1, 2, 4, 8, 15,
+  15, 30, 30 seconds, reusing the same device so no chooser and no user gesture
+  is needed. It gives up rather than retrying forever, and can be switched off.
 - **The keepalive is different.** An idle Pager dropped an otherwise healthy
   connection 35.8 seconds after connect, having never been sent anything.
   Firmware is explicit that a `ToRadio` is what keeps a radio awake for its
@@ -202,7 +213,7 @@ table.
 
 ## Testing
 
-71 assertions, all green as of this release. The same suite runs from the
+72 assertions, all green as of this release. The same suite runs from the
 **Self test** button in the masthead and from a headless harness.
 
 - **Codec:** varint boundaries, negative int32, zigzag sint32, float and
@@ -298,8 +309,14 @@ Not confirmed at all:
 - Real device timing. The 300 second heartbeat is transcribed from upstream and
   scheduled, but no radio has yet been left running long enough here to prove the
   keepalive keeps a real client alive.
-- Reconnect with backoff after a physical unplug. The transport reports a close
-  and the UI shows it; automatic reconnection is not implemented in v1.0.
+- Reconnect after a serial close still has to be done by hand, because the
+  browser will not hand back a port without a fresh user gesture. Bluetooth
+  reconnects itself with capped backoff.
+- **Why a bluetooth link closes early is still unproven.** As of v1.8.0 the
+  instrument can describe the failure precisely, with a timeline showing what the
+  link was doing when it went, and it survives the failure by reconnecting. That
+  is the step before a fix, not the fix. The leading suspect is traffic rather
+  than idleness: the log characteristic is now off by default for that reason.
 - Baud rates other than 115200.
 - Firmware other than the 2.7 era protobufs these tables were transcribed from.
   Older firmware will produce more partially understood messages, which is the
