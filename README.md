@@ -1,6 +1,6 @@
 # WATCHFIRE
 
-**FI-220 (proposed) :: v1.5.0**
+**FI-220 (proposed) :: v1.6.0**
 
 A bench for your Meshtastic radio, in one file.
 
@@ -30,6 +30,49 @@ including the whole simulator.
 - **Hardware:** a Meshtastic radio on USB serial, 115200 baud by default.
   The baud setting is exposed anyway.
 - **Permissions:** the browser asks you to choose the port. Nothing else.
+
+## First contact
+
+**2026-08-11. A LILYGO T-Lora Pager, ESP32, 915 MHz.** The first physical radio
+this instrument has ever seen.
+
+It connected, completed the handshake, and immediately raised the partially
+understood panel with nine fields:
+
+| Reported as | What it actually is |
+|---|---|
+| `FromRadio#17` | `deviceuiConfig`, a `DeviceUIConfig` |
+| `FromRadio.config#10` | `Config.device_ui` |
+| `FromRadio.moduleConfig#3` | `external_notification` |
+| `FromRadio.moduleConfig#7` | `canned_message` |
+| `FromRadio.moduleConfig#8` | `audio` |
+| `FromRadio.moduleConfig#9` | `remote_hardware` |
+| `FromRadio.moduleConfig#11` | `ambient_lighting` |
+| `FromRadio.moduleConfig#12` | `detection_sensor` |
+| `FromRadio.moduleConfig#13` | `paxcounter` |
+
+Every one of them is a section that was deliberately left out of the original
+transcription. Not one is firmware doing something unexpected. The write gate did
+exactly what it was built to do: it read what it understood, held what it did not
+byte for byte, said so, and refused to write those sections back.
+
+All nine are now transcribed, along with the three module sections the Pager did
+**not** report (`statusmessage`, `traffic_management`, `tak`, `mesh_beacon`) and
+the two remaining `FromRadio` arms (`lockdown_status`, `region_presets`). The
+simulator now sends every one of the nine during its handshake, and an assertion
+fails if a handshake leaves anything partially understood, so this exact case is
+regression tested rather than remembered.
+
+A second gap the same session exposed: the `HardwareModel` enum stopped at 65, so
+the Pager showed as `103 (unnamed)` rather than by name. The enum now runs to 143.
+
+**What first contact has confirmed:** the radio is reachable over Web Serial from
+a `file://` page, the framing and resync are correct against real firmware output,
+the handshake completes, the config burst parses, and the unknown field machinery
+behaves under real conditions rather than only under conditions I invented.
+
+**What it has not confirmed:** everything in Known Limitations below still stands.
+One successful handshake is not a validated instrument.
 
 ## What is built
 
@@ -69,7 +112,8 @@ library blob was pasted in. Instead:
 ## Protobuf transcription provenance
 
 Schema tables were transcribed by hand from **github.com/meshtastic/protobufs,
-master branch, on 2026-08-11**. These behaviours were read from source on the
+master branch, on 2026-08-11**, and extended the same day after first contact
+with a physical radio (see First contact below). These behaviours were read from source on the
 same date rather than assumed:
 
 | Fact | Source |
@@ -113,7 +157,7 @@ table.
 
 ## Testing
 
-65 assertions, all green as of this release. The same suite runs from the
+66 assertions, all green as of this release. The same suite runs from the
 **Self test** button in the masthead and from a headless harness.
 
 - **Codec:** varint boundaries, negative int32, zigzag sint32, float and
@@ -181,8 +225,10 @@ in the code, which is the correct direction for a check to fail.
 
 ## Known Limitations
 
-**Nothing in this release has touched a physical radio.** This is the important
-one. WATCHFIRE was built against its own simulator, which speaks the real framing
+**One radio, one session, one handshake.** On 2026-08-11 a LILYGO T-Lora Pager
+connected, completed the config handshake, and surfaced nine untranscribed fields
+which have since been added. That is the entire extent of hardware validation.
+Everything else below was exercised against the simulator only. WATCHFIRE was built against its own simulator, which speaks the real framing
 and the real protobufs and can produce faults a working radio will not produce on
 demand. That is a much better position than the sibling instrument BINNACLE was
 in, which shipped through v1.1.0 against firmware source and a headless harness

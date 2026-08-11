@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- WATCHFIRE :: watchfire.html :: v1.5.0 -->
+<!-- WATCHFIRE :: watchfire.html :: v1.6.0 -->
 <html lang="en" data-theme="night">
 <head>
 <meta charset="utf-8">
@@ -775,7 +775,7 @@ function unknownReport(obj, path, acc) {
    $unknown, flags the message $partial, and blocks a write.
    ========================================================================== */
 
-const PROTO_PROVENANCE = 'meshtastic/protobufs master, transcribed 2026-08-11';
+const PROTO_PROVENANCE = 'meshtastic/protobufs master, transcribed 2026-08-11, extended the same day after first contact with a T-Lora Pager';
 
 /* ---- portnums.proto ---- */
 defEnum('PortNum', {
@@ -806,7 +806,24 @@ defEnum('HardwareModel', {
   EBYTE_ESP32_S3: 54, ESP32_S3_PICO: 55, CHATTER_2: 56, HELTEC_WIRELESS_PAPER_V1_0: 57,
   HELTEC_WIRELESS_TRACKER_V1_0: 58, UNPHONE: 59, TD_LORAC: 60, CDEBYTE_EORA_S3: 61,
   TWC_MESH_V4: 62, NRF52_PROMICRO_DIY: 63, RADIOMASTER_900_BANDIT_NANO: 64,
-  HELTEC_CAPSULE_SENSOR_V3: 65, PRIVATE_HW: 255
+  HELTEC_CAPSULE_SENSOR_V3: 65, HELTEC_VISION_MASTER_T190: 66, HELTEC_VISION_MASTER_E213: 67,
+  HELTEC_VISION_MASTER_E290: 68, HELTEC_MESH_NODE_T114: 69, SENSECAP_INDICATOR: 70, TRACKER_T1000_E: 71,
+  RAK3172: 72, WIO_E5: 73, RADIOMASTER_900_BANDIT: 74, ME25LS01_4Y10TD: 75, RP2040_FEATHER_RFM95: 76,
+  M5STACK_COREBASIC: 77, M5STACK_CORE2: 78, RPI_PICO2: 79, M5STACK_CORES3: 80, SEEED_XIAO_S3: 81,
+  MS24SF1: 82, TLORA_C6: 83, WISMESH_TAP: 84, ROUTASTIC: 85, MESH_TAB: 86, MESHLINK: 87,
+  XIAO_NRF52_KIT: 88, THINKNODE_M1: 89, THINKNODE_M2: 90, T_ETH_ELITE: 91, HELTEC_SENSOR_HUB: 92,
+  MUZI_BASE: 93, HELTEC_MESH_POCKET: 94, SEEED_SOLAR_NODE: 95, NOMADSTAR_METEOR_PRO: 96, CROWPANEL: 97,
+  LINK_32: 98, SEEED_WIO_TRACKER_L1: 99, SEEED_WIO_TRACKER_L1_EINK: 100, MUZI_R1_NEO: 101,
+  T_DECK_PRO: 102, T_LORA_PAGER: 103, M5STACK_RESERVED: 104, WISMESH_TAG: 105, RAK3312: 106,
+  THINKNODE_M5: 107, HELTEC_MESH_SOLAR: 108, T_ECHO_LITE: 109, HELTEC_V4: 110, M5STACK_C6L: 111,
+  M5STACK_CARDPUTER_ADV: 112, HELTEC_WIRELESS_TRACKER_V2: 113, T_WATCH_ULTRA: 114, THINKNODE_M3: 115,
+  WISMESH_TAP_V2: 116, RAK3401: 117, RAK6421: 118, THINKNODE_M4: 119, THINKNODE_M6: 120,
+  MESHSTICK_1262: 121, TBEAM_1_WATT: 122, T5_S3_EPAPER_PRO: 123, TBEAM_BPF: 124, MINI_EPAPER_S3: 125,
+  TDISPLAY_S3_PRO: 126, HELTEC_MESH_NODE_T096: 127, MESH_TRACKER_X1: 128, THINKNODE_M7: 129,
+  THINKNODE_M8: 130, THINKNODE_M9: 131, HELTEC_V4_R8: 132, HELTEC_MESH_NODE_T1: 133, STATION_G3: 134,
+  T_IMPULSE_PLUS: 135, T_ECHO_CARD: 136, SEEED_WIO_TRACKER_L2: 137, CROWPANEL_P4: 138,
+  HELTEC_MESH_TOWER_V2: 139, MESHNOLOGY_W10: 140, HELTEC_RC32: 141, HELTEC_RC52: 142, HELTEC_RCC6: 143,
+  PRIVATE_HW: 255
 });
 
 defEnum('Role', { CLIENT: 0, CLIENT_MUTE: 1, ROUTER: 2, ROUTER_CLIENT: 3, REPEATER: 4,
@@ -1082,7 +1099,8 @@ defMsg('Config', [
   [6, 'lora', 'msg:LoRaConfig', { oneof: 'payload_variant' }],
   [7, 'bluetooth', 'msg:BluetoothConfig', { oneof: 'payload_variant' }],
   [8, 'security', 'msg:SecurityConfig', { oneof: 'payload_variant' }],
-  [9, 'sessionkey', 'msg:SessionkeyConfig', { oneof: 'payload_variant' }]
+  [9, 'sessionkey', 'msg:SessionkeyConfig', { oneof: 'payload_variant' }],
+  [10, 'device_ui', 'msg:DeviceUIConfig', { oneof: 'payload_variant' }]
 ]);
 
 /* ---- module_config.proto ----
@@ -1116,10 +1134,21 @@ defMsg('StoreForwardConfig', [
 defMsg('ModuleConfig', [
   [1, 'mqtt', 'msg:MQTTConfig', { oneof: 'payload_variant' }],
   [2, 'serial', 'msg:SerialConfig', { oneof: 'payload_variant' }],
+  [3, 'external_notification', 'msg:ExternalNotificationConfig', { oneof: 'payload_variant' }],
   [4, 'store_forward', 'msg:StoreForwardConfig', { oneof: 'payload_variant' }],
   [5, 'range_test', 'msg:RangeTestConfig', { oneof: 'payload_variant' }],
   [6, 'telemetry', 'msg:TelemetryConfig', { oneof: 'payload_variant' }],
-  [10, 'neighbor_info', 'msg:NeighborInfoConfig', { oneof: 'payload_variant' }]
+  [7, 'canned_message', 'msg:CannedMessageConfig', { oneof: 'payload_variant' }],
+  [8, 'audio', 'msg:AudioConfig', { oneof: 'payload_variant' }],
+  [9, 'remote_hardware', 'msg:RemoteHardwareConfig', { oneof: 'payload_variant' }],
+  [10, 'neighbor_info', 'msg:NeighborInfoConfig', { oneof: 'payload_variant' }],
+  [11, 'ambient_lighting', 'msg:AmbientLightingConfig', { oneof: 'payload_variant' }],
+  [12, 'detection_sensor', 'msg:DetectionSensorConfig', { oneof: 'payload_variant' }],
+  [13, 'paxcounter', 'msg:PaxcounterConfig', { oneof: 'payload_variant' }],
+  [14, 'statusmessage', 'msg:StatusMessageConfig', { oneof: 'payload_variant' }],
+  [15, 'traffic_management', 'msg:TrafficManagementConfig', { oneof: 'payload_variant' }],
+  [16, 'tak', 'msg:TAKConfig', { oneof: 'payload_variant' }],
+  [17, 'mesh_beacon', 'msg:MeshBeaconConfig', { oneof: 'payload_variant' }]
 ]);
 
 /* ---- admin.proto (the subset this build sends and reads) ---- */
@@ -1178,7 +1207,10 @@ defMsg('FromRadio', [
   [11, 'queueStatus', 'msg:QueueStatus', { oneof: 'payload_variant' }],
   [13, 'metadata', 'msg:DeviceMetadata', { oneof: 'payload_variant' }],
   [15, 'fileInfo', 'msg:FileInfo', { oneof: 'payload_variant' }],
-  [16, 'clientNotification', 'msg:ClientNotification', { oneof: 'payload_variant' }]
+  [16, 'clientNotification', 'msg:ClientNotification', { oneof: 'payload_variant' }],
+  [17, 'deviceuiConfig', 'msg:DeviceUIConfig', { oneof: 'payload_variant' }],
+  [18, 'lockdown_status', 'msg:LockdownStatus', { oneof: 'payload_variant' }],
+  [19, 'region_presets', 'msg:LoRaRegionPresetMap', { oneof: 'payload_variant' }]
 ]);
 
 /* --------------------------------------------------------------------------
@@ -1202,6 +1234,153 @@ const MODEM_PRESETS = {
 const BROADCAST_NUM = 0xffffffff;
 const DEFAULT_PSK = new Uint8Array([0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59,
   0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01]);
+
+/* ==========================================================================
+   Tables added 2026-08-11 after first contact with a physical radio.
+   A LILYGO T-Lora Pager (hardware model 103) reported nine fields this build
+   had no tables for. Nothing was lost, because unknown fields are preserved,
+   but every one of them was a section deliberately left out of the original
+   transcription rather than anything the firmware did unexpectedly. They are
+   transcribed here from the same upstream: meshtastic/protobufs master,
+   device_ui.proto, module_config.proto and mesh.proto.
+   ========================================================================== */
+
+/* ---- device_ui.proto ---- */
+defEnum('Theme', { DARK: 0, LIGHT: 1, RED: 2 });
+defEnum('Language', {
+  ENGLISH: 0, FRENCH: 1, GERMAN: 2, ITALIAN: 3, PORTUGUESE: 4, SPANISH: 5, SWEDISH: 6, FINNISH: 7,
+  POLISH: 8, TURKISH: 9, SERBIAN: 10, RUSSIAN: 11, DUTCH: 12, GREEK: 13, NORWEGIAN: 14,
+  SLOVENIAN: 15, UKRAINIAN: 16, BULGARIAN: 17, CZECH: 18, DANISH: 19,
+  SIMPLIFIED_CHINESE: 30, TRADITIONAL_CHINESE: 31
+});
+defEnum('CompassMode', { DYNAMIC: 0, FIXED_RING: 1, FREEZE_HEADING: 2 });
+defEnum('GpsCoordinateFormat', { DEC: 0, DMS: 1, UTM: 2, MGRS: 3, OLC: 4, OSGR: 5, MLS: 6 });
+
+defMsg('GeoPoint', [[1, 'zoom', 'int32'], [2, 'latitude', 'int32'], [3, 'longitude', 'int32']]);
+
+defMsg('NodeFilter', [
+  [1, 'unknown_switch', 'bool'], [2, 'offline_switch', 'bool'], [3, 'public_key_switch', 'bool'],
+  [4, 'hops_away', 'int32'], [5, 'position_switch', 'bool'], [6, 'node_name', 'string'], [7, 'channel', 'int32']
+]);
+
+defMsg('NodeHighlight', [
+  [1, 'chat_switch', 'bool'], [2, 'position_switch', 'bool'], [3, 'telemetry_switch', 'bool'],
+  [4, 'iaq_switch', 'bool'], [5, 'node_name', 'string']
+]);
+
+defMsg('Map', [[1, 'home', 'msg:GeoPoint'], [2, 'style', 'string'], [3, 'follow_gps', 'bool']]);
+
+defMsg('DeviceUIConfig', [
+  [1, 'version', 'uint32'], [2, 'screen_brightness', 'uint32'], [3, 'screen_timeout', 'uint32'],
+  [4, 'screen_lock', 'bool'], [5, 'settings_lock', 'bool'], [6, 'pin_code', 'uint32'],
+  [7, 'theme', 'enum:Theme'], [8, 'alert_enabled', 'bool'], [9, 'banner_enabled', 'bool'],
+  [10, 'ring_tone_id', 'uint32'], [11, 'language', 'enum:Language'], [12, 'node_filter', 'msg:NodeFilter'],
+  [13, 'node_highlight', 'msg:NodeHighlight'], [14, 'calibration_data', 'bytes'], [15, 'map_data', 'msg:Map'],
+  [16, 'compass_mode', 'enum:CompassMode'], [17, 'screen_rgb_color', 'uint32'],
+  [18, 'is_clockface_analog', 'bool'], [19, 'gps_format', 'enum:GpsCoordinateFormat']
+]);
+
+/* ---- mesh.proto, the two FromRadio arms that were left out ---- */
+defEnum('LockdownState', {
+  STATE_UNSPECIFIED: 0, NEEDS_PROVISION: 1, LOCKED: 2, UNLOCKED: 3, UNLOCK_FAILED: 4, DISABLED: 5
+});
+
+defMsg('LockdownStatus', [
+  [1, 'state', 'enum:LockdownState'], [2, 'lock_reason', 'string'], [3, 'boots_remaining', 'uint32'],
+  [4, 'valid_until_epoch', 'uint32'], [5, 'backoff_seconds', 'uint32']
+]);
+
+/* The preset map nests further than this build reads. The two repeated arms
+   are held as bytes so the message decodes cleanly and nothing is invented
+   about a structure that has not been transcribed. */
+defMsg('LoRaRegionPresetMap', [
+  [1, 'groups', 'bytes', { rep: true }], [2, 'region_groups', 'bytes', { rep: true }]
+]);
+
+/* ---- module_config.proto, the seven module sections the Pager reported ---- */
+defMsg('ExternalNotificationConfig', [
+  [1, 'enabled', 'bool'], [2, 'output_ms', 'uint32'], [3, 'output', 'uint32'], [4, 'active', 'bool'],
+  [5, 'alert_message', 'bool'], [6, 'alert_bell', 'bool'], [7, 'use_pwm', 'bool'],
+  [8, 'output_vibra', 'uint32'], [9, 'output_buzzer', 'uint32'], [10, 'alert_message_vibra', 'bool'],
+  [11, 'alert_message_buzzer', 'bool'], [12, 'alert_bell_vibra', 'bool'], [13, 'alert_bell_buzzer', 'bool'],
+  [14, 'nag_timeout', 'uint32'], [15, 'use_i2s_as_buzzer', 'bool']
+]);
+
+defEnum('InputEventChar', { NONE: 0, SELECT: 10, UP: 17, DOWN: 18, LEFT: 19, RIGHT: 20, CANCEL: 24, BACK: 27 });
+
+defMsg('CannedMessageConfig', [
+  [1, 'rotary1_enabled', 'bool'], [2, 'inputbroker_pin_a', 'uint32'], [3, 'inputbroker_pin_b', 'uint32'],
+  [4, 'inputbroker_pin_press', 'uint32'], [5, 'inputbroker_event_cw', 'enum:InputEventChar'],
+  [6, 'inputbroker_event_ccw', 'enum:InputEventChar'], [7, 'inputbroker_event_press', 'enum:InputEventChar'],
+  [8, 'updown1_enabled', 'bool'], [9, 'enabled', 'bool'], [10, 'allow_input_source', 'string'],
+  [11, 'send_bell', 'bool']
+]);
+
+defEnum('AudioBaud', {
+  CODEC2_DEFAULT: 0, CODEC2_3200: 1, CODEC2_2400: 2, CODEC2_1600: 3, CODEC2_1400: 4,
+  CODEC2_1300: 5, CODEC2_1200: 6, CODEC2_700: 7, CODEC2_700B: 8
+});
+
+defMsg('AudioConfig', [
+  [1, 'codec2_enabled', 'bool'], [2, 'ptt_pin', 'uint32'], [3, 'bitrate', 'enum:AudioBaud'],
+  [4, 'i2s_ws', 'uint32'], [5, 'i2s_sd', 'uint32'], [6, 'i2s_din', 'uint32'], [7, 'i2s_sck', 'uint32']
+]);
+
+defEnum('RemoteHardwarePinType', { UNKNOWN: 0, DIGITAL_READ: 1, DIGITAL_WRITE: 2 });
+
+defMsg('RemoteHardwarePin', [
+  [1, 'gpio_pin', 'uint32'], [2, 'name', 'string'], [3, 'type', 'enum:RemoteHardwarePinType']
+]);
+
+defMsg('RemoteHardwareConfig', [
+  [1, 'enabled', 'bool'], [2, 'allow_undefined_pin_access', 'bool'],
+  [3, 'available_pins', 'msg:RemoteHardwarePin', { rep: true }]
+]);
+
+defMsg('AmbientLightingConfig', [
+  [1, 'led_state', 'bool'], [2, 'current', 'uint32'], [3, 'red', 'uint32'], [4, 'green', 'uint32'], [5, 'blue', 'uint32']
+]);
+
+defEnum('DetectionTriggerType', {
+  LOGIC_LOW: 0, LOGIC_HIGH: 1, FALLING_EDGE: 2, RISING_EDGE: 3,
+  EITHER_EDGE_ACTIVE_LOW: 4, EITHER_EDGE_ACTIVE_HIGH: 5
+});
+
+defMsg('DetectionSensorConfig', [
+  [1, 'enabled', 'bool'], [2, 'minimum_broadcast_secs', 'uint32'], [3, 'state_broadcast_secs', 'uint32'],
+  [4, 'send_bell', 'bool'], [5, 'name', 'string'], [6, 'monitor_pin', 'uint32'],
+  [7, 'detection_trigger_type', 'enum:DetectionTriggerType'], [8, 'use_pullup', 'bool']
+]);
+
+defMsg('PaxcounterConfig', [
+  [1, 'enabled', 'bool'], [2, 'paxcounter_update_interval', 'uint32'],
+  [3, 'wifi_threshold', 'int32'], [4, 'ble_threshold', 'int32']
+]);
+
+/* The Pager did not report these three, which is itself worth knowing: this
+   firmware build either has them compiled out or does not send them. They are
+   transcribed anyway so the next radio does not produce the same panel. */
+defMsg('StatusMessageConfig', [[1, 'node_status', 'string']]);
+
+defMsg('TrafficManagementConfig', [
+  [4, 'position_min_interval_secs', 'uint32'], [6, 'nodeinfo_direct_response_max_hops', 'uint32'],
+  [8, 'rate_limit_window_secs', 'uint32'], [9, 'rate_limit_max_packets', 'uint32'],
+  [11, 'unknown_packet_threshold', 'uint32']
+]);
+
+defMsg('TAKConfig', [[1, 'team', 'uint32'], [2, 'role', 'uint32']]);
+
+defMsg('BroadcastTarget', [
+  [1, 'preset', 'enum:ModemPreset'], [2, 'region', 'enum:RegionCode'], [4, 'channel_index', 'uint32']
+]);
+
+defMsg('MeshBeaconConfig', [
+  [1, 'flags', 'uint32'], [3, 'broadcast_send_as_node', 'uint32'], [4, 'broadcast_message', 'string'],
+  [5, 'broadcast_offer_channel', 'msg:ChannelSettings'], [6, 'broadcast_offer_region', 'enum:RegionCode'],
+  [7, 'broadcast_offer_preset', 'enum:ModemPreset'], [8, 'broadcast_on_channel', 'msg:ChannelSettings'],
+  [9, 'broadcast_on_region', 'enum:RegionCode'], [10, 'broadcast_on_preset', 'enum:ModemPreset'],
+  [11, 'broadcast_interval_secs', 'uint32'], [13, 'broadcast_targets', 'msg:BroadcastTarget', { rep: true }]
+]);
 
 /* ==========================================================================
    WATCHFIRE :: serial framing
@@ -1714,7 +1893,8 @@ class SimTransport {
       { $type: 'Config', $payload_variant: 'display', display: { $type: 'DisplayConfig', screen_on_secs: 600, units: 1 } },
       { $type: 'Config', $payload_variant: 'lora', lora: { $type: 'LoRaConfig', use_preset: true, modem_preset: 0, region: 1, hop_limit: 3, tx_enabled: true, tx_power: 27, sx126x_rx_boosted_gain: true } },
       { $type: 'Config', $payload_variant: 'bluetooth', bluetooth: { $type: 'BluetoothConfig', enabled: true, mode: 0 } },
-      { $type: 'Config', $payload_variant: 'security', security: { $type: 'SecurityConfig', public_key: new Uint8Array(32).fill(7), serial_enabled: true } }
+      { $type: 'Config', $payload_variant: 'security', security: { $type: 'SecurityConfig', public_key: new Uint8Array(32).fill(7), serial_enabled: true } },
+      { $type: 'Config', $payload_variant: 'device_ui', device_ui: { $type: 'DeviceUIConfig', version: 1, screen_brightness: 153, screen_timeout: 30, theme: 0, language: 0, compass_mode: 0 } }
     ];
   }
 
@@ -1723,7 +1903,17 @@ class SimTransport {
       { $type: 'ModuleConfig', $payload_variant: 'mqtt', mqtt: { $type: 'MQTTConfig', enabled: false, address: 'mqtt.meshtastic.org', root: 'msh' } },
       { $type: 'ModuleConfig', $payload_variant: 'serial', serial: { $type: 'SerialConfig', enabled: false, baud: 0 } },
       { $type: 'ModuleConfig', $payload_variant: 'telemetry', telemetry: { $type: 'TelemetryConfig', device_update_interval: 1800, environment_measurement_enabled: true, environment_update_interval: 1800 } },
-      { $type: 'ModuleConfig', $payload_variant: 'neighbor_info', neighbor_info: { $type: 'NeighborInfoConfig', enabled: true, update_interval: 7200 } }
+      { $type: 'ModuleConfig', $payload_variant: 'neighbor_info', neighbor_info: { $type: 'NeighborInfoConfig', enabled: true, update_interval: 7200 } },
+      /* The seven sections a real T-Lora Pager reported on 2026-08-11 that this
+         build had no tables for. They are here so the case that produced the
+         partially understood panel is exercised every time the suite runs. */
+      { $type: 'ModuleConfig', $payload_variant: 'external_notification', external_notification: { $type: 'ExternalNotificationConfig', enabled: true, output_ms: 1000, output_vibra: 4, alert_message_vibra: true, nag_timeout: 0 } },
+      { $type: 'ModuleConfig', $payload_variant: 'canned_message', canned_message: { $type: 'CannedMessageConfig', rotary1_enabled: false, updown1_enabled: true, send_bell: false } },
+      { $type: 'ModuleConfig', $payload_variant: 'audio', audio: { $type: 'AudioConfig', codec2_enabled: false, bitrate: 0 } },
+      { $type: 'ModuleConfig', $payload_variant: 'remote_hardware', remote_hardware: { $type: 'RemoteHardwareConfig', enabled: false } },
+      { $type: 'ModuleConfig', $payload_variant: 'ambient_lighting', ambient_lighting: { $type: 'AmbientLightingConfig', led_state: true, current: 10, red: 255, green: 120, blue: 0 } },
+      { $type: 'ModuleConfig', $payload_variant: 'detection_sensor', detection_sensor: { $type: 'DetectionSensorConfig', enabled: false, minimum_broadcast_secs: 45, detection_trigger_type: 1 } },
+      { $type: 'ModuleConfig', $payload_variant: 'paxcounter', paxcounter: { $type: 'PaxcounterConfig', enabled: false, paxcounter_update_interval: 300 } }
     ];
   }
 
@@ -1804,11 +1994,12 @@ class SimTransport {
   _sendConfigBurst(nonce) {
     this._log('INFO  | Client wants config, nonce ' + nonce);
     this._send({ my_info: { $type: 'MyNodeInfo', my_node_num: this.myNum, reboot_count: 12, min_app_version: 30200, pio_env: 'heltec-v3', nodedb_count: this.nodes.length }, $payload_variant: 'my_info' });
-    this._send({ metadata: { $type: 'DeviceMetadata', firmware_version: '2.7.4.simulated', device_state_version: 24, canShutdown: true, hasWifi: true, hasBluetooth: true, role: 0, hw_model: 43, hasPKC: true }, $payload_variant: 'metadata' });
+    this._send({ metadata: { $type: 'DeviceMetadata', firmware_version: '2.7.4.simulated', device_state_version: 24, canShutdown: true, hasWifi: true, hasBluetooth: true, role: 0, hw_model: 103, hasPKC: true }, $payload_variant: 'metadata' });
     for (const n of this.nodes) this._send({ node_info: n, $payload_variant: 'node_info' });
     for (const c of this.channels) this._send({ channel: c, $payload_variant: 'channel' });
     for (const c of this.config) this._send({ config: c, $payload_variant: 'config' });
     for (const m of this.moduleConfig) this._send({ moduleConfig: m, $payload_variant: 'moduleConfig' });
+    this._send({ deviceuiConfig: { $type: 'DeviceUIConfig', version: 1, screen_brightness: 153, screen_timeout: 30, theme: 0, language: 0, is_clockface_analog: true }, $payload_variant: 'deviceuiConfig' });
     this._send({ config_complete_id: nonce, $payload_variant: 'config_complete_id' });
     this._log('INFO  | Config sent');
   }
@@ -2735,8 +2926,8 @@ async function decryptPayload(psk, packetId, fromNode, cipherBytes) {
    after it, and no eval, ever.
    ========================================================================== */
 
-const VERSION = '1.5.0';
-const BUILD_NOTE = 'All twelve stations are built. Nothing in this release has been confirmed against a physical radio.';
+const VERSION = '1.6.0';
+const BUILD_NOTE = 'All twelve stations are built. First contact with a physical radio was made on 2026-08-11, against a LILYGO T-Lora Pager. Most behaviour is still unconfirmed.';
 
 function el(tag, attrs) {
   const n = document.createElement(tag);
@@ -6142,6 +6333,33 @@ async function runSelfTest(report) {
     ok(s.deframer.stats.frames > 20, 'frames read');
     await s.disconnect();
     return s.nodes.size + ' nodes, ' + s.config.size + ' config sections, ' + s.deframer.stats.frames + ' frames';
+  });
+
+  await ta('flow', 'the sections a real radio reported now decode with nothing left over', async () => {
+    /* First contact with a LILYGO T-Lora Pager on 2026-08-11 produced nine
+       partially understood fields: FromRadio 17, Config 10, and ModuleConfig
+       3, 7, 8, 9, 11, 12 and 13. The simulator now sends every one of them, so
+       a handshake that leaves anything unread fails here rather than in the
+       field. */
+    const sim = new SimTransport({ faults: { splitFrames: true, debugChatter: false } });
+    const s = new RadioSession();
+    await s.connect(sim);
+    const deadline = Date.now() + 8000;
+    while (s.state !== 'ready' && Date.now() < deadline) await sleep(40);
+    eq(s.state, 'ready', 'handshake');
+    eq(Array.from(s.partialTypes).join(', '), '', 'nothing may be left partially understood');
+    ok(s.config.has('device_ui'), 'Config field 10, device_ui');
+    ['external_notification', 'canned_message', 'audio', 'remote_hardware',
+     'ambient_lighting', 'detection_sensor', 'paxcounter'].forEach(k => {
+      ok(s.moduleConfig.has(k), 'ModuleConfig arm ' + k);
+    });
+    eq(s.config.get('device_ui').device_ui.screen_brightness, 153, 'a value inside the new table decodes');
+    eq(s.moduleConfig.get('ambient_lighting').ambient_lighting.red, 255, 'and inside a module table');
+    eq(enumName('HardwareModel', s.metadata.hw_model), 'T_LORA_PAGER', 'the hardware model resolves to a name rather than a bare number');
+    /* and every one of them must still survive a write gate check */
+    ok(unknownReport(s.config.get('device_ui')).length === 0, 'device_ui is fully understood, so it is writable');
+    await s.disconnect();
+    return '9 previously unknown fields now read';
   });
 
   await ta('flow', 'a mismatched config_complete_id is noticed', async () => {
