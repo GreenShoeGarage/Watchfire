@@ -3,6 +3,81 @@
 All notable changes to this instrument. Versions follow the house rule: build to
 a working stop, then stop for review.
 
+## v1.7.0 (2026-08-11)
+
+Bluetooth. Confirmed working against the Pager from a file:// page.
+
+### Built
+- **BleTransport.** Connects to a Meshtastic radio over Bluetooth Low Energy
+  behind the same transport interface as the serial link, so all twelve stations
+  work over it unchanged.
+- **A simulated GATT device**, driven by the same synthetic radio in unframed
+  mode, so the bluetooth path is exercised without hardware.
+- Station 01 gains a bluetooth button, and replaces THE WIRE over bluetooth with
+  GATT counters, saying plainly that this transport has no lane to watch.
+
+### Engineering
+- The session now knows whether a transport is framed. A framed one delivers a
+  byte lane to reassemble; an unframed one delivers whole messages straight to
+  the frame handler. No synthetic headers are manufactured to keep the deframer
+  busy, and an assertion checks it never sees a byte over bluetooth.
+- No wake run over bluetooth. Those 32 bytes exist to make a sleeping serial
+  device hunt for a frame header, and there is no header here.
+- FromRadio is polled until empty and never subscribed to, per an explicit
+  firmware warning that notify on it is not backwards compatible.
+- The debug lane arrives on the log characteristic, tried as a LogRecord
+  protobuf first and falling back to plain text, because that characteristic has
+  been reused across firmware generations.
+- Every GATT operation goes through one lane, since Chrome rejects concurrent
+  ones. The serial wire gets that property for free.
+- Bluetooth keepalive at 15 s rather than 300 s, after an idle Pager dropped a
+  healthy connection 35.8 s after connect.
+- A radio that accepts a connection and then drops it is reported as a pairing
+  failure with what to do about it, rather than as a dead radio.
+- 71 assertions, all green.
+
+### Known
+- Reconnect is still manual, which bites harder over bluetooth than over serial.
+- Pair the radio at the operating system level first. The browser has no way to
+  enter the passkey the radio displays.
+
+## v1.6.0 (2026-08-11)
+
+First contact with a physical radio, and the schema work it produced.
+
+### The session
+A LILYGO T-Lora Pager, ESP32, 915 MHz, connected over Web Serial and completed the
+handshake. It reported nine fields with no tables in this build. Nothing was lost
+and nothing was written back wrongly, because unknown fields are preserved and
+partially understood sections are write blocked. That is the write gate working
+against firmware nobody here wrote.
+
+### Added
+- `FromRadio` arms 17 `deviceuiConfig`, 18 `lockdown_status`, 19 `region_presets`.
+- `Config` arm 10 `device_ui`, with the full `DeviceUIConfig` table and its
+  `NodeFilter`, `NodeHighlight`, `Map` and `GeoPoint` sub messages, plus the
+  Theme, Language, CompassMode and GpsCoordinateFormat enums.
+- Every remaining `ModuleConfig` arm: `external_notification`, `canned_message`,
+  `audio`, `remote_hardware`, `ambient_lighting`, `detection_sensor`,
+  `paxcounter`, and also `statusmessage`, `traffic_management`, `tak` and
+  `mesh_beacon`, which the Pager did not report but the next radio might.
+- The `HardwareModel` enum ran to 65 and now runs to 143. The Pager is model 103
+  and had been showing as an unnamed number.
+
+### Engineering
+- The simulator now sends all nine of the fields the Pager reported, and claims to
+  be a T-Lora Pager, so the exact first contact case is exercised on every run.
+- New assertion: a handshake that leaves anything partially understood fails.
+  66 assertions, all green.
+- `LoRaRegionPresetMap` nests further than this build reads. Its two repeated arms
+  are held as bytes so the message decodes cleanly rather than having a structure
+  invented for it.
+
+### Unchanged
+- Module config writes are still read and diff only.
+- Reconnect with backoff is still not implemented.
+- Everything in Known Limitations still stands. One handshake is not validation.
+
 ## v1.5.0 (2026-08-11)
 
 Adds station 11 LOGBOOK. Every station in the roadmap is now built.

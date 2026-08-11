@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- WATCHFIRE :: watchfire.html :: v1.6.0 -->
+<!-- WATCHFIRE :: watchfire.html :: v1.7.0 -->
 <html lang="en" data-theme="night">
 <head>
 <meta charset="utf-8">
@@ -1845,6 +1845,9 @@ class SimTransport {
     this.passkey = null;
     this.passkeyUsed = 0;
     this.editOpen = false;
+    this.framed = opts.framed !== false;   // BLE hands over whole messages
+    this.onMessage = function () {};
+    this.onLogLine = function () {};
     this.deframer = new Deframer({ onFrame: (f) => this._onToRadio(f), onStray: () => {} });
     this.outQ = [];
     this.pumping = false;
@@ -1934,7 +1937,8 @@ class SimTransport {
 
   async write(bytes) {
     if (!this.open_) throw new Error('simulator is not open');
-    this.deframer.push(bytes);
+    if (this.framed) this.deframer.push(bytes);
+    else this._onToRadio(bytes);          // GATT already gave the boundary
   }
 
   /* ---- outbound side ---- */
@@ -1963,13 +1967,18 @@ class SimTransport {
 
   _log(text) {
     if (!this.faults.debugChatter) return;
+    /* Over a wire the log shares the lane with framed packets. Over BLE it
+       has its own characteristic, so it goes out a different door. */
+    if (!this.framed) { this.onLogLine(text); return; }
     this._emit(utf8Encode(text + '\n'));
   }
 
   _send(fromRadio) {
     fromRadio.$type = 'FromRadio';
     if (fromRadio.id === undefined) fromRadio.id = (this.packetSeq++) >>> 0;
-    let framed = frameEncode(encode('FromRadio', fromRadio));
+    const body = encode('FromRadio', fromRadio);
+    if (!this.framed) { this.onMessage(body); return; }
+    let framed = frameEncode(body);
     if (this.faults.malformedRun && Math.random() < 0.15) {
       const garbage = new Uint8Array([START1, 0x00, 0x41, 0x42, START1, START2, 0xff, 0xf0]);
       const both = new Uint8Array(garbage.length + framed.length);
@@ -2301,6 +2310,271 @@ class ReplayTransport {
 }
 
 /* ==========================================================================
+   WATCHFIRE :: Bluetooth Low Energy transport
+   Confirmed working from a file:// page against a LILYGO T-Lora Pager on
+   2026-08-11, so this lives inside the no server rule like everything else.
+
+   BLE is not the serial protocol wearing a different coat. There is no
+   0x94 0xC3 framing, because GATT already supplies the message boundary:
+   one write is one ToRadio, one read is one FromRadio, and an empty read
+   means the queue is drained. The deframer is therefore bypassed rather
+   than fed invented headers, and station 01 says plainly that this
+   transport has no lane to watch.
+
+   UUIDs read from meshtastic/firmware src/BluetoothCommon.h, 2026-08-11.
+   ========================================================================== */
+
+const BLE_SERVICE = '6ba1b218-15a8-461f-9fa8-5dcae273eafd';
+const BLE_TORADIO = 'f75c76d2-129e-4dad-a1dd-7866124401e7';
+const BLE_FROMRADIO = '2c55e69e-4993-11ed-b878-0242ac120002';
+const BLE_FROMNUM = 'ed9da18c-a800-4f66-a670-aa7547e34453';
+const BLE_LOGRADIO = '5a3d6e49-06e6-4423-9944-e9de8cdf9547';
+const BLE_LOGRADIO_LEGACY = '6c6fd238-78fa-436b-aacf-15c5be1ef2e2';
+
+/* An idle BLE client gets dropped. Observed at 35.8 s on a Pager that was
+   connected but had never sent anything, and firmware is explicit that a
+   ToRadio is what keeps the radio awake for its client. A real session sends
+   want_config_id immediately so it should never be idle, but the margin is
+   cheap and the failure is a silent disconnect, so the BLE heartbeat runs far
+   inside that window rather than at the 300 s the serial link uses. */
+const BLE_HEARTBEAT_MS = 15000;
+
+class BleTransport {
+  constructor(device) {
+    this.kind = 'ble';
+    /* GATT hands over whole messages, so nothing here is framed. */
+    this.framed = false;
+    this.device = device;
+    this.onData = function () {};
+    this.onMessage = function () {};
+    this.onLog = function () {};
+    this.onClose = function () {};
+    this.server = null;
+    this.chars = {};
+    this.stats = { reads: 0, writes: 0, notifies: 0, messages: 0, empties: 0, logLines: 0 };
+    this._queue = Promise.resolve();
+    this._draining = false;
+    this._again = false;
+    this._open = false;
+  }
+
+  static get supported() {
+    return typeof navigator !== 'undefined' && !!navigator.bluetooth;
+  }
+
+  static async request() {
+    if (!BleTransport.supported) throw new Error('this browser does not expose navigator.bluetooth');
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [BLE_SERVICE] }],
+      optionalServices: [BLE_SERVICE]
+    });
+    return new BleTransport(device);
+  }
+
+  /* Chrome rejects concurrent GATT operations, so every one of them goes
+     through a single lane. Same property the serial wire has for free. */
+  _gatt(fn) {
+    const run = this._queue.then(fn, fn);
+    this._queue = run.then(() => {}, () => {});
+    return run;
+  }
+
+  async open() {
+    this._onDrop = () => {
+      if (!this._open) return;
+      this._open = false;
+      this.onClose('the radio dropped the bluetooth link');
+    };
+    this.device.addEventListener('gattserverdisconnected', this._onDrop);
+
+    this.server = await this.device.gatt.connect();
+    /* Pairing happens somewhere in here if it is going to. Give it a moment
+       rather than racing it into service discovery, because a refused bond
+       surfaces later as a disconnected server and looks like a dead radio. */
+    await sleep(600);
+    if (!this.device.gatt.connected) {
+      throw new Error('the radio accepted the connection then dropped it, which is the pairing handshake failing. Pair it in your operating system bluetooth settings first, using the passkey shown on the radio.');
+    }
+    const svc = await this.server.getPrimaryService(BLE_SERVICE);
+    this.chars.toRadio = await svc.getCharacteristic(BLE_TORADIO);
+    this.chars.fromRadio = await svc.getCharacteristic(BLE_FROMRADIO);
+    this.chars.fromNum = await svc.getCharacteristic(BLE_FROMNUM);
+    this._open = true;
+
+    /* Subscribe to FromNum only. Firmware carries an explicit warning that
+       adding NOTIFY to FromRadio breaks things and is not backwards
+       compatible, so FromRadio is polled, never subscribed to. */
+    this.chars.fromNum.addEventListener('characteristicvaluechanged', () => {
+      this.stats.notifies++;
+      this.drain();
+    });
+    await this.chars.fromNum.startNotifications();
+
+    /* The debug lane survives over BLE on its own characteristic. Optional:
+       older firmware exposes it under a different id, and some builds not at
+       all, so a missing one is not an error. */
+    for (const id of [BLE_LOGRADIO, BLE_LOGRADIO_LEGACY]) {
+      try {
+        const ch = await svc.getCharacteristic(id);
+        ch.addEventListener('characteristicvaluechanged', (e) => this._onLogValue(e.target.value));
+        await ch.startNotifications();
+        this.chars.logRadio = ch;
+        break;
+      } catch (e) { /* not present on this build */ }
+    }
+    this.drain();
+  }
+
+  _onLogValue(view) {
+    if (!view || !view.byteLength) return;
+    const bytes = new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
+    /* Newer firmware sends a LogRecord protobuf here, older sends plain text.
+       Try the structured form and fall back rather than guessing from the
+       characteristic id, which has been reused across firmware generations. */
+    let line = null;
+    try {
+      const rec = decode('LogRecord', bytes);
+      if (rec.message && !rec.$partial) line = rec.message;
+    } catch (e) { /* not a LogRecord */ }
+    if (line === null) line = utf8Decode(bytes);
+    this.stats.logLines++;
+    this.onLog(line);
+  }
+
+  /* Read FromRadio until it comes back empty. A notify only says there is
+     something waiting, not how much, so the only honest end condition is a
+     zero length read. */
+  drain() {
+    if (this._draining) { this._again = true; return; }
+    this._draining = true;
+    const step = async () => {
+      try {
+        while (this._open) {
+          const view = await this._gatt(() => this.chars.fromRadio.readValue());
+          this.stats.reads++;
+          if (!view || !view.byteLength) { this.stats.empties++; break; }
+          const bytes = new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
+          this.stats.messages++;
+          this.onMessage(bytes);
+        }
+      } catch (err) {
+        if (this._open) {
+          this._open = false;
+          this.onClose('read failed: ' + (err && err.message ? err.message : err));
+        }
+      }
+      this._draining = false;
+      if (this._again && this._open) { this._again = false; this.drain(); }
+    };
+    step();
+  }
+
+  async write(bytes) {
+    if (!this._open) throw new Error('the bluetooth link is not open');
+    if (bytes.length > MAX_TO_FROM_RADIO_SIZE) {
+      throw new Error('a ToRadio of ' + bytes.length + ' bytes exceeds the 512 byte limit');
+    }
+    await this._gatt(() => this.chars.toRadio.writeValue(bytes));
+    this.stats.writes++;
+    /* A write usually produces an answer, and a notify for it can arrive
+       before the write settles, so drain unconditionally afterwards. */
+    this.drain();
+  }
+
+  async close() {
+    this._open = false;
+    try { if (this._onDrop) this.device.removeEventListener('gattserverdisconnected', this._onDrop); } catch (e) {}
+    try { if (this.chars.fromNum) await this.chars.fromNum.stopNotifications(); } catch (e) {}
+    try { if (this.device.gatt.connected) this.device.gatt.disconnect(); } catch (e) {}
+  }
+}
+
+/* --------------------------------------------------------------------------
+   A simulated GATT device, so the bluetooth path is exercised without
+   hardware in exactly the way the serial path is. It presents the same
+   surface Web Bluetooth does and is driven by the same synthetic radio, in
+   unframed mode.
+   -------------------------------------------------------------------------- */
+class SimBleDevice {
+  constructor(opts) {
+    this.name = 'Meshtastic_sim';
+    this.id = 'simulated-device';
+    this.radio = new SimTransport(Object.assign({ framed: false }, opts || {}));
+    this.queue = [];
+    this.listeners = { gattserverdisconnected: [] };
+    this.charListeners = {};
+    this.connected = false;
+    this.radio.onMessage = (bytes) => {
+      this.queue.push(bytes);
+      this._notify(BLE_FROMNUM, new Uint8Array([this.queue.length & 0xff, 0, 0, 0]));
+    };
+    this.radio.onLogLine = (text) => this._notify(BLE_LOGRADIO, utf8Encode(text));
+    const self = this;
+    this.gatt = {
+      get connected() { return self.connected; },
+      connect: async () => { self.connected = true; await self.radio.open(); return self._server(); },
+      disconnect: () => { self.connected = false; self._fire('gattserverdisconnected'); }
+    };
+  }
+
+  addEventListener(type, fn) { (this.listeners[type] || (this.listeners[type] = [])).push(fn); }
+  removeEventListener(type, fn) {
+    const l = this.listeners[type] || [];
+    const i = l.indexOf(fn);
+    if (i >= 0) l.splice(i, 1);
+  }
+  _fire(type) { (this.listeners[type] || []).forEach(fn => fn({ type: type })); }
+
+  _notify(uuid, bytes) {
+    const listeners = this.charListeners[uuid] || [];
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    listeners.forEach(fn => fn({ target: { value: view } }));
+  }
+
+  _char(uuid) {
+    const self = this;
+    return {
+      uuid: uuid,
+      addEventListener: (type, fn) => { (self.charListeners[uuid] || (self.charListeners[uuid] = [])).push(fn); },
+      startNotifications: async () => {},
+      stopNotifications: async () => {},
+      readValue: async () => {
+        if (uuid !== BLE_FROMRADIO) return new DataView(new ArrayBuffer(0));
+        const next = self.queue.shift();
+        if (!next) return new DataView(new ArrayBuffer(0));
+        return new DataView(next.buffer, next.byteOffset, next.byteLength);
+      },
+      writeValue: async (bytes) => {
+        if (uuid !== BLE_TORADIO) throw new Error('not writable');
+        await self.radio.write(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+      }
+    };
+  }
+
+  _server() {
+    const self = this;
+    return {
+      get connected() { return self.connected; },
+      getPrimaryService: async (uuid) => {
+        if (uuid !== BLE_SERVICE) throw new Error('service not found');
+        return {
+          getCharacteristic: async (cid) => {
+            if ([BLE_TORADIO, BLE_FROMRADIO, BLE_FROMNUM, BLE_LOGRADIO].indexOf(cid) < 0) {
+              const e = new Error('characteristic not found'); e.name = 'NotFoundError'; throw e;
+            }
+            return self._char(cid);
+          }
+        };
+      }
+    };
+  }
+
+  /* Reproduce the failure a real radio produces when nobody enters the
+     passkey: accept the connection, then drop it. */
+  dropAfter(ms) { setTimeout(() => this.gatt.disconnect(), ms); }
+}
+
+/* ==========================================================================
    WATCHFIRE :: radio session
    Owns the conversation with one radio: the config handshake, the node
    database, the admin path with its session passkey, and the outbound queue.
@@ -2365,15 +2639,31 @@ class RadioSession {
       onFrame: (f) => this._onFrame(f),
       onStray: (s) => this._onStray(s)
     });
+    /* A framed transport delivers a byte lane that has to be reassembled. An
+       unframed one delivers whole messages, because GATT already did that
+       work, so the deframer is bypassed rather than fed invented headers. */
+    this.framed = transport.framed !== false;
     transport.onData = (chunk) => {
       if (this.capturing) this._captureEvent('in', chunk);
       this.deframer.push(chunk);
     };
+    transport.onMessage = (payload) => {
+      if (this.capturing) this._captureEvent('in', payload);
+      this._onFrame(payload);
+    };
+    transport.onLog = (line) => this._pushDebug(line);
     transport.onClose = (reason) => this._onClose(reason);
     this.oneWay = !!transport.oneWay;
     this.setState('opening');
     this.startedAt = Date.now();
     await transport.open();
+    if (!this.framed) {
+      /* No wake run over BLE. The wake bytes exist to make a sleeping serial
+         device hunt for a frame header, and there is no header here. */
+      this.setState('handshake');
+      await this._startConfig();
+      return;
+    }
     if (this.oneWay) {
       /* A recording cannot be asked for anything. Everything this session
          learns has to arrive from the stream, so state is left alone and the
@@ -2471,7 +2761,7 @@ class RadioSession {
 
   async send(toRadio) {
     const body = encode('ToRadio', toRadio);
-    const framed = frameEncode(body);
+    const framed = this.framed ? frameEncode(body) : body;
     this.stats.tx++; this.stats.txBytes += framed.length;
     await this._raw(framed);
     this.emit('tx', toRadio);
@@ -2854,7 +3144,9 @@ class RadioSession {
       try { await this.send({ $type: 'ToRadio', heartbeat: { $type: 'Heartbeat' }, $payload_variant: 'heartbeat' }); }
       catch (e) { this.emit('debug', 'heartbeat failed: ' + e.message); }
     };
-    this.heartbeatTimer = setInterval(beat, HEARTBEAT_MS);
+    /* An idle BLE client gets dropped by the radio, so the bluetooth link is
+       kept warm far more often than the serial one needs. */
+    this.heartbeatTimer = setInterval(beat, this.framed ? HEARTBEAT_MS : BLE_HEARTBEAT_MS);
     beat();
   }
 }
@@ -2926,8 +3218,8 @@ async function decryptPayload(psk, packetId, fromNode, cipherBytes) {
    after it, and no eval, ever.
    ========================================================================== */
 
-const VERSION = '1.6.0';
-const BUILD_NOTE = 'All twelve stations are built. First contact with a physical radio was made on 2026-08-11, against a LILYGO T-Lora Pager. Most behaviour is still unconfirmed.';
+const VERSION = '1.7.0';
+const BUILD_NOTE = 'All twelve stations are built. Serial and bluetooth have both reached a real radio, a LILYGO T-Lora Pager, on 2026-08-11. Most behaviour beyond the handshake is still unconfirmed.';
 
 function el(tag, attrs) {
   const n = document.createElement(tag);
@@ -3300,34 +3592,73 @@ function stationLink() {
     el('button', { class: 'btn primary', disabled: connected, onclick: connectSerial }, 'Choose a serial port'),
     el('label', { class: 'field', style: 'width:150px;margin:0' }, el('span', null, 'Baud'),
       el('select', { id: 'baud' }, ['115200', '921600', '57600', '38400', '9600'].map(b => el('option', { value: b, selected: b === '115200' }, b)))),
+    el('button', {
+      class: 'btn', disabled: connected, onclick: async () => {
+        if (!BleTransport.supported) {
+          showDialog('Web Bluetooth is not available', el('div', null,
+            el('p', null, 'This browser does not expose navigator.bluetooth. Chromium based browsers do, though some ship it switched off: Brave hides it behind brave://flags, Opera does not ship it on desktop, and some Linux builds gate it behind chrome://flags/#enable-experimental-web-platform-features.'),
+            el('p', null, 'A file:// page is fine for bluetooth, same as it is for serial. The origin is not the problem.')
+          ), [{ label: 'Close', primary: true }]);
+          return;
+        }
+        try {
+          const t = await BleTransport.request();
+          await beginSession(t);
+        } catch (err) {
+          const msg = (err && err.message) ? err.message : String(err);
+          if (/User cancelled|chooser/i.test(msg)) { toast('No radio chosen.'); return; }
+          toast('Bluetooth: ' + msg, 'bad');
+        }
+      }
+    }, 'Connect over bluetooth'),
     el('button', { class: 'btn', disabled: connected, onclick: () => beginSession(new SimTransport({ faults: APP.simFaults })) }, 'Start the simulator'),
     el('button', { class: 'btn danger', disabled: !connected, onclick: endSession }, 'Disconnect')
   ));
   if (!SerialTransport.supported) {
     p0.inner.append(el('div', { class: 'warnbox' }, 'Web Serial is not available in this browser, so only the simulator can run here. Chromium based desktop browsers expose it. A file:// page is a secure context, so no server is needed.'));
   }
-  if (APP.transport && APP.transport.kind === 'sim') {
+  if (APP.transport && (APP.transport.kind === 'sim' || APP.transport.kind === 'simble')) {
     p0.inner.append(el('div', { class: 'warnbox' }, 'You are talking to the simulator, not a radio. Everything below is synthetic. Station 12 controls what it does to you.'));
+  }
+  if (APP.transport && APP.transport.kind === 'ble') {
+    p0.inner.append(el('div', { class: 'okbox' },
+      'Connected over bluetooth. The radio drops a client that goes quiet, so the keepalive runs every ' + (BLE_HEARTBEAT_MS / 1000) + ' s here rather than the ' + (HEARTBEAT_MS / 1000) + ' s a serial link needs. If the link drops anyway, reconnecting is manual in this release.'));
   }
   wrap.append(p0);
 
-  /* the wire */
-  const p1 = panel('The wire', s ? (APP.transport && APP.transport.kind === 'sim' ? 'simulated lane' : 'serial lane') : '');
-  p1.inner.append(el('div', { class: 'wire', id: 'wire' }, el('span', { class: 'idle' }, 'no link')));
-  p1.inner.append(el('p', { class: 'note' },
-    'Every 250 ms of the lane, newest at the right. Bar height is bytes. Teal where a frame was found, grey where the bytes were firmware log text, ember where the reader had to resync, red where a length field claimed more than 512 bytes.'));
-  const st = s ? s.deframer.stats : { frames: 0, bytesIn: 0, strayBytes: 0, resyncs: 0, oversize: 0 };
-  const tally = el('div', { class: 'tally' },
-    el('div', { class: 'ok' }, el('b', null, String(st.frames)), el('span', null, 'good frames')),
-    el('div', null, el('b', null, String(st.bytesIn)), el('span', null, 'bytes in')),
-    el('div', null, el('b', null, String(st.strayBytes)), el('span', null, 'stray bytes')),
-    el('div', { class: st.resyncs ? 'warn' : '' }, el('b', null, String(st.resyncs)), el('span', null, 'resyncs')),
-    el('div', { class: st.oversize ? 'bad' : '' }, el('b', null, String(st.oversize)), el('span', null, 'oversize len')),
-    el('div', null, el('b', null, s ? String(s.stats.tx) : '0'), el('span', null, 'frames out'))
-  );
-  p1.inner.append(tally);
-  wrap.append(p1);
-  setTimeout(paintWire, 0);
+  /* the wire, or an honest account of why there is not one */
+  const isBle = APP.transport && APP.transport.kind === 'ble';
+  if (isBle) {
+    const b = APP.transport.stats;
+    const p1 = panel('The lane', 'bluetooth, no wire to watch');
+    p1.inner.append(el('div', { class: 'warnbox' },
+      'Over bluetooth there is no lane of bytes to show you. GATT delivers whole messages, so there is no framing to watch, nothing to resync, and no stray bytes to route. The wire display would have to invent something to draw, so it does not appear.'));
+    p1.inner.append(el('div', { class: 'tally' },
+      el('div', { class: 'ok' }, el('b', null, String(b.messages)), el('span', null, 'messages in')),
+      el('div', null, el('b', null, String(b.reads)), el('span', null, 'gatt reads')),
+      el('div', null, el('b', null, String(b.notifies)), el('span', null, 'notifies')),
+      el('div', null, el('b', null, String(b.empties)), el('span', null, 'empty reads')),
+      el('div', null, el('b', null, String(b.writes)), el('span', null, 'messages out')),
+      el('div', null, el('b', null, String(b.logLines)), el('span', null, 'log lines'))));
+    p1.inner.append(el('p', { class: 'note' },
+      'A notify on FromNum says something is waiting but not how much, so FromRadio is read until it comes back empty. Those empty reads are the end of each drain and are counted rather than hidden. FromRadio is never subscribed to: firmware carries an explicit warning that adding notify to it breaks compatibility.'));
+    wrap.append(p1);
+  } else {
+    const p1 = panel('The wire', s ? (APP.transport && APP.transport.kind === 'sim' ? 'simulated lane' : 'serial lane') : '');
+    p1.inner.append(el('div', { class: 'wire', id: 'wire' }, el('span', { class: 'idle' }, 'no link')));
+    p1.inner.append(el('p', { class: 'note' },
+      'Every 250 ms of the lane, newest at the right. Bar height is bytes. Teal where a frame was found, grey where the bytes were firmware log text, ember where the reader had to resync, red where a length field claimed more than 512 bytes.'));
+    const st = s ? s.deframer.stats : { frames: 0, bytesIn: 0, strayBytes: 0, resyncs: 0, oversize: 0 };
+    p1.inner.append(el('div', { class: 'tally' },
+      el('div', { class: 'ok' }, el('b', null, String(st.frames)), el('span', null, 'good frames')),
+      el('div', null, el('b', null, String(st.bytesIn)), el('span', null, 'bytes in')),
+      el('div', null, el('b', null, String(st.strayBytes)), el('span', null, 'stray bytes')),
+      el('div', { class: st.resyncs ? 'warn' : '' }, el('b', null, String(st.resyncs)), el('span', null, 'resyncs')),
+      el('div', { class: st.oversize ? 'bad' : '' }, el('b', null, String(st.oversize)), el('span', null, 'oversize len')),
+      el('div', null, el('b', null, s ? String(s.stats.tx) : '0'), el('span', null, 'frames out'))));
+    wrap.append(p1);
+    setTimeout(paintWire, 0);
+  }
 
   /* identity */
   if (s && (s.myInfo || s.metadata)) {
@@ -3348,7 +3679,8 @@ function stationLink() {
       if (s.myInfo.reboot_count !== undefined) add('reboots', String(s.myInfo.reboot_count));
     }
     add('session passkey', s.passkeyState === 'none' ? 'not held' : s.passkeyState + ', ' + Math.round(s.passkeyAgeMs / 1000) + ' s old');
-    add('heartbeat', s.state === 'ready' ? 'every ' + (HEARTBEAT_MS / 1000) + ' s' : 'not running');
+    add('heartbeat', s.state === 'ready' ? 'every ' + ((s.framed ? HEARTBEAT_MS : BLE_HEARTBEAT_MS) / 1000) + ' s' : 'not running');
+    add('transport', APP.transport ? APP.transport.kind : 'none');
     p2.inner.append(kv);
     wrap.append(p2);
   }
@@ -6453,6 +6785,83 @@ async function runSelfTest(report) {
     try { await s.writeConfig(cfg); } catch (e) { threw = true; }
     ok(threw, 'the write gate must refuse');
     return 'refused';
+  });
+
+  /* ---------- bluetooth ---------- */
+  await ta('bluetooth', 'a full handshake completes over GATT with no framing at all', async () => {
+    /* Confirmed working against a LILYGO T-Lora Pager from a file:// page on
+       2026-08-11. This exercises the same path against a simulated GATT
+       device, so the bluetooth transport is not the only untested one. */
+    const dev = new SimBleDevice({ faults: { splitFrames: false, debugChatter: true } });
+    const t = new BleTransport(dev);
+    const s = new RadioSession();
+    await s.connect(t);
+    const deadline = Date.now() + 8000;
+    while (s.state !== 'ready' && Date.now() < deadline) await sleep(40);
+    eq(s.state, 'ready', 'handshake over bluetooth');
+    ok(s.nodes.size >= 5, 'roster arrived, got ' + s.nodes.size);
+    ok(s.config.size >= 8, 'config arrived, got ' + s.config.size);
+    eq(s.framed, false, 'the session must know this transport is not framed');
+    eq(s.deframer.stats.frames, 0, 'the deframer must be bypassed, not fed invented headers');
+    eq(s.deframer.stats.bytesIn, 0, 'and must never see a byte');
+    ok(t.stats.messages > 20, 'messages arrived whole, got ' + t.stats.messages);
+    ok(t.stats.empties > 0, 'each drain must end on an empty read rather than a guess');
+    await s.disconnect();
+    return t.stats.messages + ' messages, ' + t.stats.reads + ' reads, zero frames';
+  });
+
+  await ta('bluetooth', 'a ToRadio goes out unframed and is understood', async () => {
+    const dev = new SimBleDevice({ faults: { splitFrames: false, debugChatter: false } });
+    const t = new BleTransport(dev);
+    const s = new RadioSession();
+    await s.connect(t);
+    let deadline = Date.now() + 8000;
+    while (s.state !== 'ready' && Date.now() < deadline) await sleep(40);
+    const entry = await s.sendText('over the air', { to: 0x4411aa02, wantAck: true });
+    deadline = Date.now() + 6000;
+    while (!entry.ack && Date.now() < deadline) await sleep(40);
+    ok(entry.ack, 'an ack must come back over bluetooth');
+    ok(entry.ack.ok, 'and be an ack rather than a nak');
+    ok(t.stats.writes >= 2, 'the config request and the message both went out, got ' + t.stats.writes);
+    await s.disconnect();
+    return 'ack in ' + (entry.ack.at - entry.t) + ' ms';
+  });
+
+  await ta('bluetooth', 'the debug lane arrives on its own characteristic', async () => {
+    const dev = new SimBleDevice({ faults: { splitFrames: false, debugChatter: true } });
+    const t = new BleTransport(dev);
+    const s = new RadioSession();
+    await s.connect(t);
+    const deadline = Date.now() + 8000;
+    while (s.state !== 'ready' && Date.now() < deadline) await sleep(40);
+    ok(s.debugLines.length > 0, 'log lines must reach the debug lane, got ' + s.debugLines.length);
+    ok(s.debugLines.some(d => d.line.indexOf('Config sent') >= 0), 'and be whole lines rather than fragments');
+    eq(s.deframer.stats.strayBytes, 0, 'log text must not have gone through the byte lane');
+    await s.disconnect();
+    return s.debugLines.length + ' lines off the log characteristic';
+  });
+
+  await ta('bluetooth', 'a radio that accepts then drops the link is reported as a pairing failure', async () => {
+    const dev = new SimBleDevice({ faults: { splitFrames: false, debugChatter: false } });
+    dev.dropAfter(50);                       // what an unentered passkey looks like
+    const t = new BleTransport(dev);
+    const s = new RadioSession();
+    let threw = null;
+    try { await s.connect(t); } catch (e) { threw = e; }
+    ok(threw, 'connect must fail rather than sitting in handshake');
+    ok(/pairing/i.test(threw.message), 'and name pairing as the likely cause, got: ' + threw.message);
+    return 'reported as pairing';
+  });
+
+  t('bluetooth', 'the GATT identifiers match the firmware header', () => {
+    /* meshtastic/firmware src/BluetoothCommon.h, read 2026-08-11 */
+    eq(BLE_SERVICE, '6ba1b218-15a8-461f-9fa8-5dcae273eafd');
+    eq(BLE_TORADIO, 'f75c76d2-129e-4dad-a1dd-7866124401e7');
+    eq(BLE_FROMRADIO, '2c55e69e-4993-11ed-b878-0242ac120002');
+    eq(BLE_FROMNUM, 'ed9da18c-a800-4f66-a670-aa7547e34453');
+    ok(BLE_HEARTBEAT_MS < 36000, 'the bluetooth keepalive must sit inside the observed idle drop of 35.8 s');
+    ok(BLE_HEARTBEAT_MS < HEARTBEAT_MS, 'and be shorter than the serial one');
+    return 'four identifiers, keepalive at ' + (BLE_HEARTBEAT_MS / 1000) + ' s';
   });
 
   /* ---------- diff ---------- */

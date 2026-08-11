@@ -1,6 +1,6 @@
 # WATCHFIRE
 
-**FI-220 (proposed) :: v1.6.0**
+**FI-220 :: v1.7.0**
 
 A bench for your Meshtastic radio, in one file.
 
@@ -26,9 +26,18 @@ WATCHFIRE says so plainly and everything except the radio link still runs,
 including the whole simulator.
 
 - **Browser:** a Chromium based desktop browser for the serial link (Chrome,
-  Edge, Brave, Arc, Opera). Any modern browser for the simulator.
-- **Hardware:** a Meshtastic radio on USB serial, 115200 baud by default.
-  The baud setting is exposed anyway.
+  Edge, Brave, Arc, Opera). Any modern browser for the simulator. Bluetooth
+  additionally needs Web Bluetooth switched on, which some builds ship disabled:
+  Brave hides it behind `brave://flags/#brave-web-bluetooth-api`, Opera does not
+  ship it on desktop at all, and some Linux Chromium builds gate it behind
+  `chrome://flags/#enable-experimental-web-platform-features`. A `file://` page
+  is fine for bluetooth, same as for serial.
+- **Hardware:** a Meshtastic radio on USB serial, 115200 baud by default (the
+  baud setting is exposed anyway), or over Bluetooth Low Energy. **Pair the
+  radio in your operating system bluetooth settings first**, entering the six
+  digit passkey it shows on its screen. Firmware asks for bonding with man in
+  the middle protection, the browser cannot enter a passkey, and an unpaired
+  radio accepts the connection and then drops it.
 - **Permissions:** the browser asks you to choose the port. Nothing else.
 
 ## First contact
@@ -73,6 +82,42 @@ behaves under real conditions rather than only under conditions I invented.
 
 **What it has not confirmed:** everything in Known Limitations below still stands.
 One successful handshake is not a validated instrument.
+
+## Bluetooth
+
+**Confirmed working from a `file://` page against the Pager on 2026-08-11.** The
+origin is not a problem for Web Bluetooth any more than it is for Web Serial.
+
+BLE is not the serial protocol in a different coat, and the differences are
+visible in the instrument rather than papered over:
+
+- **There is no framing.** GATT already supplies the message boundary: one write
+  is one `ToRadio`, one read is one `FromRadio`, and an empty read means the
+  queue is drained. The deframer is bypassed entirely. An assertion checks it
+  never sees a single byte, because the tempting shortcut here is to wrap each
+  message in a synthetic `0x94 0xC3` header so the rest of the stack does not
+  notice, and that would mean drawing bytes that were never on any wire.
+- **THE WIRE therefore has nothing to show, and says so.** Station 01 replaces it
+  over bluetooth with GATT counters: messages in, reads, notifies, empty reads,
+  messages out, log lines.
+- **`FromRadio` is polled, never subscribed to.** Firmware carries an explicit
+  warning that adding notify to it breaks compatibility. Only `FromNum` is
+  subscribed, and a notify says something is waiting but not how much, so
+  `FromRadio` is read until it returns zero bytes.
+- **The debug lane survives**, on its own characteristic, decoded as a `LogRecord`
+  where firmware sends one and as plain text where it does not.
+- **The keepalive is different.** An idle Pager dropped an otherwise healthy
+  connection 35.8 seconds after connect, having never been sent anything.
+  Firmware is explicit that a `ToRadio` is what keeps a radio awake for its
+  client. A real session asks for config immediately so it should never be idle,
+  but the bluetooth heartbeat runs every 15 s rather than the 300 s a serial link
+  needs, because the failure is a silent disconnect.
+- **All twelve stations work unchanged over bluetooth.** They sit above the
+  transport interface and cannot tell the difference, which was the point of
+  having one.
+
+The whole path is exercised against a simulated GATT device, so bluetooth is not
+the one untested transport.
 
 ## What is built
 
@@ -157,7 +202,7 @@ table.
 
 ## Testing
 
-66 assertions, all green as of this release. The same suite runs from the
+71 assertions, all green as of this release. The same suite runs from the
 **Self test** button in the masthead and from a headless harness.
 
 - **Codec:** varint boundaries, negative int32, zigzag sint32, float and
@@ -207,6 +252,11 @@ table.
   note on every section and keeping the raw capture out unless asked for, byte
   fields surviving serialisation as hex, and the printable summary stating
   plainly when no radio was involved.
+- **Bluetooth:** a full handshake over GATT with the deframer provably bypassed
+  rather than fed invented headers, an unframed ToRadio going out and being
+  acknowledged, the debug lane arriving on its own characteristic as whole lines,
+  a radio that accepts then drops the link being reported as a pairing failure
+  rather than a dead radio, and the GATT identifiers matching the firmware header.
 - **Diff, channels, crypto, QR, geometry:** diff change counting, the share URL
   round trip, base64 across all 256 byte values, the documented single byte
   default key expansion, an AES-CTR round trip, QR version selection and
