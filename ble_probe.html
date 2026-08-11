@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- WATCHFIRE :: ble-probe.html :: v1.0.0
+<!-- WATCHFIRE :: ble-probe.html :: v1.1.0
      A single question, answered on your machine rather than by me guessing:
      does Web Bluetooth work from a file:// page, and will it see the Pager?
      Double click this. Nothing here talks to a network. License GPL-3.0 -->
@@ -104,10 +104,41 @@ async function probe(filtered){
     log('chooser returned a device');
     log('  name: ' + (device.name || '(none advertised)'));
     log('  id:   ' + device.id);
-    log('connecting to GATT, this is where pairing happens if it is going to');
-    var server = await device.gatt.connect();
-    log('  connected: ' + server.connected);
-    var svc = await server.getPrimaryService(MESH_SERVICE);
+
+    /* Meshtastic asks for bonding with MITM, and the passkey is displayed on the
+       radio rather than entered on it. If the operating system does not complete
+       that exchange the radio drops the link, and the failure surfaces later as a
+       disconnected GATT server. Timing the drop tells the two cases apart. */
+    var dropAt = null, connectAt = 0;
+    device.addEventListener('gattserverdisconnected', function () {
+      dropAt = Date.now() - connectAt;
+      log('  ** the radio dropped the link ' + dropAt + ' ms after connect **');
+    });
+
+    var svc = null, attempt = 0;
+    while (attempt < 3 && !svc) {
+      attempt++;
+      log('attempt ' + attempt + ': connecting to GATT, this is where pairing happens if it is going to');
+      connectAt = Date.now();
+      dropAt = null;
+      try {
+        var server = await device.gatt.connect();
+        log('  connect resolved, connected=' + server.connected);
+        /* Give the pairing exchange a moment to finish or fail before asking for
+           services, rather than racing it. */
+        await new Promise(function (r) { setTimeout(r, 900); });
+        log('  still connected after 900 ms: ' + device.gatt.connected);
+        svc = await server.getPrimaryService(MESH_SERVICE);
+      } catch (e) {
+        log('  attempt ' + attempt + ' failed: ' + e.name + ', ' + e.message);
+        if (attempt < 3) {
+          log('  waiting, then retrying. Watch the radio screen for a six digit passkey.');
+          await new Promise(function (r) { setTimeout(r, 1500); });
+        } else {
+          throw e;
+        }
+      }
+    }
     log('found the Meshtastic service');
     var names = { };
     names[TORADIO] = 'ToRadio (write)';
@@ -180,9 +211,29 @@ async function probe(filtered){
       log('This is the origin problem. Web Bluetooth is refusing because of where the page is');
       log('served from, not because of the radio. That decides the architecture: BLE cannot');
       log('live in a file:// instrument.');
-    } else if (err.name === 'NotSupportedError' || err.name === 'NetworkError') {
-      log('The connection or pairing failed rather than the permission. Worth trying again with');
-      log('the radio freshly woken, and worth checking whether the OS has it already bonded.');
+    } else if (/GATT Server is disconnected/i.test(err.message) || err.name === 'NetworkError') {
+      log('The radio accepted the connection and then dropped it. That is the pairing');
+      log('handshake failing, not the web API and not the origin: Web Bluetooth already');
+      log('worked well enough to open the chooser and connect.');
+      log('');
+      log('Meshtastic firmware asks for bonding with man in the middle protection, and sets');
+      log('the radio as display only. It shows a six digit passkey on its screen and expects');
+      log('the computer to type it in. The browser cannot do that. The operating system has to.');
+      log('');
+      log('In order of least regret:');
+      log('  1. Pair the radio in your operating system Bluetooth settings first. Enter the');
+      log('     passkey shown on the Pager screen. Once it is bonded, come back and retry.');
+      log('  2. If it is already bonded, remove the bond and pair again. A stale bond after a');
+      log('     firmware update produces exactly this.');
+      log('  3. chrome://device-log with everything unchecked except Bluetooth, level Debug,');
+      log('     gives the low level reason the link dropped.');
+      log('  4. Last resort, and read this one twice: set bluetooth.mode to NO_PIN on the');
+      log('     radio over USB in station 06. That removes the passkey requirement and lets');
+      log('     anyone in radio range connect and administer it. Fine on a bench, a bad idea');
+      log('     on anything you care about.');
+    } else if (err.name === 'NotSupportedError') {
+      log('The connection failed rather than the permission. Worth trying again with the radio');
+      log('freshly woken, and worth checking whether the OS has it already bonded.');
     }
   }
 }
