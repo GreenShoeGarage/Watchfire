@@ -1,6 +1,6 @@
 # WATCHFIRE
 
-**FI-220 :: v1.9.0**
+**FI-220 :: v1.10.0**
 
 A bench for your Meshtastic radio, in one file.
 
@@ -119,12 +119,36 @@ visible in the instrument rather than papered over:
   needed. It gives up rather than retrying forever, and can be switched off. The
   first step is deliberately not one second: after a disconnect a radio needs a
   moment to start advertising again, and asking too early just burns an attempt.
-- **Every connect is raced against a clock.** `gatt.connect()` has no timeout of
-  its own, so a radio that is not advertising leaves the promise unsettled
-  forever. WATCHFIRE gives it 12 seconds, then cancels the pending connection and
-  fails the attempt so the next one can run. Without that, one stuck attempt
-  silently kills the whole retry chain, and the instrument sits on "opening"
-  looking frozen.
+- **The radio's own disconnect reason is decoded.** Firmware logs
+  `BLE disconnect reason: N` on every bluetooth drop. That line cannot arrive
+  over the link that just died, but it does arrive on the USB debug lane, so if
+  you connect over serial while bluetooth is misbehaving, station 01 decodes the
+  code and says what it means. Supervision timeout, stale bond, radio sleeping
+  and nine others are named; anything else is reported as unrecognised rather
+  than guessed at. This is better evidence than anything WATCHFIRE can infer from
+  its own end of a dead link.
+- **A run of connect timeouts is diagnosed, not just retried.** Firmware restarts
+  advertising when a client disconnects, so repeated timeouts mean the radio is
+  not advertising at all rather than that it is busy. When the retry budget is
+  spent, station 01 says so and offers the only reliable recovery: choosing the
+  radio again, which forces a fresh scan.
+- **A connection request cannot be cancelled from a page.** `gatt.connect()` has
+  no timeout and no abort, and `disconnect()` does not reliably call off a
+  request that is still in flight. WATCHFIRE races it against a 12 second clock
+  so it can stop *waiting* and tell you what is happening, but it does not
+  pretend to have cancelled anything. At most one connection request is ever in
+  flight per radio: a retry waits on the outstanding one rather than issuing
+  another, because stacking them is what wedges the page until a reload.
+- **Where the browser can say whether the radio is advertising, it is asked
+  first.** `watchAdvertisements` is not available everywhere, but where it is, a
+  radio that is not there fails immediately and leaves nothing half open, rather
+  than being connected to hopefully.
+- **Retries stop when they cannot help.** If a connection request is still
+  outstanding after two attempts, further attempts all queue behind it and none
+  can succeed. WATCHFIRE says so and offers the only two levers that exist:
+  release, which drops our record and asks the browser to disconnect, and
+  reloading the page, which always works. That is a limit of the Web Bluetooth
+  API rather than of the radio.
 - **The keepalive is different.** An idle Pager dropped an otherwise healthy
   connection 35.8 seconds after connect, having never been sent anything.
   Firmware is explicit that a `ToRadio` is what keeps a radio awake for its
@@ -221,7 +245,7 @@ table.
 
 ## Testing
 
-74 assertions, all green as of this release. The same suite runs from the
+76 assertions, all green as of this release. The same suite runs from the
 **Self test** button in the masthead and from a headless harness.
 
 - **Codec:** varint boundaries, negative int32, zigzag sint32, float and

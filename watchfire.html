@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- WATCHFIRE :: watchfire.html :: v1.9.0 -->
+<!-- WATCHFIRE :: watchfire.html :: v1.10.0 -->
 <html lang="en" data-theme="night">
 <head>
 <meta charset="utf-8">
@@ -2339,12 +2339,67 @@ const BLE_LOGRADIO_LEGACY = '6c6fd238-78fa-436b-aacf-15c5be1ef2e2';
    inside that window rather than at the 300 s the serial link uses. */
 const BLE_HEARTBEAT_MS = 15000;
 
-/* gatt.connect() never times out on its own. If the radio is not advertising,
-   out of range, or still tearing down the previous connection, the promise
-   simply never settles, the link sits in "opening" forever, and because the
-   attempt never fails no retry after it ever runs. One stuck attempt kills the
-   whole backoff chain, so every connect is raced against a clock. */
+/* gatt.connect() never times out on its own, and it also cannot be cancelled.
+   There is no abort, and disconnect() does not reliably abort a connection
+   request that is still in flight. Racing it against a clock stops us waiting;
+   it does not stop the browser trying.
+
+   That distinction cost a release. v1.9.0 raced the connect and then called
+   disconnect() to "cancel" it, which left an unfinished connection request
+   behind on every attempt. Six retries piled up six of them on one device and
+   nothing could get through until the page was reloaded.
+
+   So: the clock is for reporting only. At most one connect is ever in flight
+   per device, a retry adopts the outstanding one rather than issuing another,
+   and where the browser can tell us whether the radio is even advertising, we
+   ask that first instead of connecting hopefully. */
 const BLE_CONNECT_TIMEOUT_MS = 12000;
+const BLE_ADVERT_WAIT_MS = 8000;
+
+/* One connection request per device, page wide, keyed weakly so a device we
+   stop using does not pin anything. */
+const BLE_PENDING_CONNECT = new WeakMap();
+
+/* Firmware logs "BLE disconnect reason: N" on every disconnect, and that number
+   says precisely why the link went. It cannot arrive over the link that just
+   died, but it does arrive on the USB debug lane, so WATCHFIRE decodes it when
+   it sees it in station 01.
+
+   NimBLE reports HCI originated disconnects as 0x200 | code, so both forms are
+   accepted. Codes are the Bluetooth Core specification error codes. Anything
+   not in this table is reported as unrecognised rather than guessed at. */
+const BLE_DISCONNECT_REASONS = {
+  0x05: 'authentication failure, which usually means the bond is not accepted',
+  0x06: 'PIN or key missing, which is a stale bond. Remove the pairing on both sides and pair again',
+  0x08: 'connection supervision timeout, meaning neither side heard the other inside the window. Link quality or too much traffic',
+  0x13: 'the radio deliberately ended the connection',
+  0x14: 'the radio ended the connection because of low resources',
+  0x15: 'the radio ended the connection because it is powering off or sleeping',
+  0x16: 'this computer ended the connection',
+  0x22: 'LMP response timeout, a low level protocol stall',
+  0x28: 'instant passed, a timing failure during a connection update',
+  0x3b: 'unacceptable connection parameters',
+  0x3d: 'terminated because of a MIC failure, which points at the encryption keys',
+  0x3e: 'the connection could not be established in the first place'
+};
+
+function bleDisconnectReason(code) {
+  if (typeof code !== 'number' || !isFinite(code)) return null;
+  const hci = (code & 0xff00) === 0x0200 ? (code & 0xff) : code;
+  const text = BLE_DISCONNECT_REASONS[hci];
+  return {
+    raw: code, hci: hci,
+    hex: '0x' + hci.toString(16),
+    text: text || 'not a code this build recognises'
+  };
+}
+
+/* Pick the reason out of a firmware log line, if it is one. */
+function bleReasonFromLog(line) {
+  const m = /BLE disconnect reason:\s*(-?\d+)/i.exec(String(line || ''));
+  if (!m) return null;
+  return bleDisconnectReason(parseInt(m[1], 10));
+}
 
 class BleTransport {
   constructor(device, opts) {
@@ -2396,25 +2451,71 @@ class BleTransport {
     try { if (this._onDrop) this.device.removeEventListener('gattserverdisconnected', this._onDrop); } catch (e) {}
   }
 
+  /* Ask the browser whether the radio is actually advertising before trying to
+     connect to it. Not every build exposes this, and where it is missing we
+     simply connect and find out, but where it exists it turns a hopeful connect
+     into an informed one. */
+  async _waitForAdvertisement(ms) {
+    if (typeof this.device.watchAdvertisements !== 'function' || typeof AbortController === 'undefined') return null;
+    const ctrl = new AbortController();
+    let onAdvert = null, timer = null;
+    try {
+      const seen = new Promise((resolve) => {
+        onAdvert = () => resolve(true);
+        this.device.addEventListener('advertisementreceived', onAdvert, { once: true });
+        timer = setTimeout(() => resolve(false), ms);
+      });
+      await this.device.watchAdvertisements({ signal: ctrl.signal });
+      const heard = await seen;
+      this._note(heard ? 'advert' : 'silent', heard ? 'the radio is advertising' : 'no advertisement in ' + (ms / 1000) + ' s');
+      return heard;
+    } catch (e) {
+      return null;                       // not supported here, or the watch failed
+    } finally {
+      clearTimeout(timer);
+      if (onAdvert) { try { this.device.removeEventListener('advertisementreceived', onAdvert); } catch (e) {} }
+      try { ctrl.abort(); } catch (e) {}
+    }
+  }
+
   async _connectWithTimeout(ms) {
-    /* A GATT left half open by a previous attempt makes the next connect hang,
-       so it is cleared before asking again rather than hoped about. */
-    try { if (this.device.gatt.connected) this.device.gatt.disconnect(); } catch (e) {}
+    const outstanding = BLE_PENDING_CONNECT.get(this.device);
+    if (outstanding) {
+      /* A connection request from an earlier attempt has never finished. Asking
+         again would stack a second one on the same device, which is what made
+         a reload the only way out. Wait on the one already running instead. */
+      this._note('adopt', 'a connection request from an earlier attempt is still outstanding, waiting on that one');
+      return await this._race(outstanding, ms, true);
+    }
+
+    const heard = await this._waitForAdvertisement(BLE_ADVERT_WAIT_MS);
+    if (heard === false) {
+      /* The browser can see the radio is not there. Fail now, without leaving a
+         connection request behind to poison the next attempt. */
+      throw new Error('the radio is not advertising, so no connection was attempted. It may be asleep, out of range, or already connected to something else. Nothing was left half open, so the next attempt starts clean.');
+    }
+
+    const p = this.device.gatt.connect();
+    BLE_PENDING_CONNECT.set(this.device, p);
+    const forget = () => { if (BLE_PENDING_CONNECT.get(this.device) === p) BLE_PENDING_CONNECT.delete(this.device); };
+    p.then(forget, forget);
+    return await this._race(p, ms, false);
+  }
+
+  /* The clock reports; it does not cancel. Whatever the connection request is
+     doing, it keeps doing it, and the next attempt will find it and wait rather
+     than starting a second one. */
+  _race(promise, ms, adopted) {
     let timer = null;
     const clock = new Promise((resolve, reject) => {
       timer = setTimeout(() => {
-        this._note('timeout', 'no answer after ' + (ms / 1000) + ' s, cancelling');
-        /* Cancel the pending connection. Left running it will interfere with
-           every attempt after it. */
-        try { this.device.gatt.disconnect(); } catch (e) {}
-        reject(new Error('the radio did not answer inside ' + (ms / 1000) + ' s and the attempt was cancelled. After a disconnect a radio needs a moment to start advertising again, so this is normal on the first retry and a real problem if it keeps happening.'));
+        this._note('timeout', 'no answer after ' + (ms / 1000) + ' s, still outstanding');
+        reject(new Error('the radio did not answer inside ' + (ms / 1000) + ' s. ' +
+          (adopted ? 'This attempt was waiting on a connection request that has still not finished. ' : '') +
+          'A connection request cannot be cancelled from a page, so it is left running and the next attempt will wait on it rather than starting another. If this repeats, the radio is asleep, out of range, or connected to something else.'));
       }, ms);
     });
-    try {
-      return await Promise.race([this.device.gatt.connect(), clock]);
-    } finally {
-      clearTimeout(timer);
-    }
+    return Promise.race([promise, clock]).finally(() => clearTimeout(timer));
   }
 
   _note(kind, detail) {
@@ -2434,6 +2535,9 @@ class BleTransport {
   async open() {
     this.openedAt = Date.now();
     this._onDrop = () => {
+      /* Detach on the way out. Without this, every dropped link left its
+         listener attached and a reconnect added another. */
+      this._detach();
       if (!this._open) return;
       this._open = false;
       const sinceWrite = this.lastWriteAt ? Math.round((Date.now() - this.lastWriteAt) / 1000) : null;
@@ -2564,6 +2668,21 @@ class BleTransport {
     /* A write usually produces an answer, and a notify for it can arrive
        before the write settles, so drain unconditionally afterwards. */
     this.drain();
+  }
+
+  /* There is no way to abort a connection request from a page. This is the
+     nearest thing: drop our record of it and ask the browser to disconnect,
+     which may or may not clear a request that never finished. If it does not,
+     reloading the page is the only remaining lever, and the UI says so rather
+     than leaving you to discover it. */
+  forget() {
+    BLE_PENDING_CONNECT.delete(this.device);
+    this._note('forget', 'released our hold on the connection request');
+    try { this.device.gatt.disconnect(); } catch (e) {}
+  }
+
+  static isConnectOutstanding(device) {
+    return !!(device && BLE_PENDING_CONNECT.get(device));
   }
 
   async close() {
@@ -2882,6 +3001,15 @@ class RadioSession {
 
   _pushDebug(line) {
     if (!line) return;
+    /* The radio explains its own bluetooth disconnects on this lane. That
+       explanation cannot come over the link that just died, so when the serial
+       lane carries one it is decoded rather than left as a bare number. */
+    const reason = bleReasonFromLog(line);
+    if (reason) {
+      this.lastBleReason = { t: Date.now(), reason: reason, line: line };
+      line = line + '   [' + reason.hex + ': ' + reason.text + ']';
+      this.emit('blereason', this.lastBleReason);
+    }
     this.debugLines.push({ t: Date.now(), line: line });
     if (this.debugLines.length > this.debugCap) this.debugLines.splice(0, this.debugLines.length - this.debugCap);
     this.emit('debug', line);
@@ -3311,7 +3439,7 @@ async function decryptPayload(psk, packetId, fromNode, cipherBytes) {
    after it, and no eval, ever.
    ========================================================================== */
 
-const VERSION = '1.9.0';
+const VERSION = '1.10.0';
 const BUILD_NOTE = 'All twelve stations are built. Serial and bluetooth have both reached a real radio, a LILYGO T-Lora Pager, on 2026-08-11. Most behaviour beyond the handshake is still unconfirmed.';
 
 function el(tag, attrs) {
@@ -3573,12 +3701,14 @@ function showAbout() {
 /* The first step is not 1 s. After a disconnect the radio needs a moment to
    start advertising again, and asking too early just burns a connect timeout. */
 const RECONNECT_BACKOFF_MS = [3000, 5000, 8000, 15000, 15000, 30000, 30000];
-const RECONNECT = { enabled: true, attempt: 0, timer: null, deliberate: false, lastError: '' };
+const RECONNECT = { enabled: true, attempt: 0, timer: null, deliberate: false, lastError: '', stuck: false, exhausted: false };
 
 function cancelReconnect() {
   if (RECONNECT.timer) clearTimeout(RECONNECT.timer);
   RECONNECT.timer = null;
   RECONNECT.attempt = 0;
+  RECONNECT.stuck = false;
+  RECONNECT.exhausted = false;
 }
 
 function scheduleReconnect(reason) {
@@ -3586,7 +3716,17 @@ function scheduleReconnect(reason) {
   const t = APP.transport;
   if (!t || t.kind !== 'ble' || !t.device) return false;
   if (RECONNECT.attempt >= RECONNECT_BACKOFF_MS.length) {
+    RECONNECT.exhausted = true;
     toast('Gave up reconnecting after ' + RECONNECT.attempt + ' attempts.', 'bad');
+    return false;
+  }
+  /* If the browser is still holding an unfinished connection request, more
+     attempts cannot help: a page cannot cancel one, and every retry queues
+     behind the same request. Retrying into that is what made a reload the only
+     way out. Stop, and say why. */
+  if (RECONNECT.attempt >= 2 && BleTransport.isConnectOutstanding(t.device)) {
+    RECONNECT.stuck = true;
+    toast('The browser is still holding an unfinished connection request. More retries cannot get past it.', 'bad');
     return false;
   }
   const wait = RECONNECT_BACKOFF_MS[RECONNECT.attempt];
@@ -3660,7 +3800,7 @@ function wireSession(session) {
     setStatus(s.state, map[s.state] || s.state);
     if (s.state === 'ready') toast('Radio ready. ' + session.nodes.size + ' nodes, ' + session.channels.filter(Boolean).length + ' channels, ' + session.config.size + ' config sections read.', 'ok');
     if (s.state === 'error') toast(s.detail || 'link fault', 'bad');
-    if (s.state === 'ready') { cancelReconnect(); }
+    if (s.state === 'ready') { cancelReconnect(); RECONNECT.exhausted = false; }
     if (s.state === 'closed' && s.detail) {
       if (!scheduleReconnect(s.detail)) toast('Link closed: ' + s.detail);
     }
@@ -3779,6 +3919,63 @@ function stationLink() {
   if (APP.transport && (APP.transport.kind === 'sim' || APP.transport.kind === 'simble')) {
     p0.inner.append(el('div', { class: 'warnbox' }, 'You are talking to the simulator, not a radio. Everything below is synthetic. Station 12 controls what it does to you.'));
   }
+  if (RECONNECT.exhausted) {
+    const box = el('div', { class: 'badbox' });
+    box.append(el('div', null,
+      'Gave up after ' + RECONNECT_BACKOFF_MS.length + ' attempts, every one of them timing out without an answer. ' +
+      'The radio restarts advertising when a client disconnects, so a run of timeouts means it is not advertising at all rather than that it is busy.'));
+    const ul = el('ul');
+    [
+      'It is asleep. Press a button or wake the screen and try again. A radio that has gone to sleep has its radio off, not merely quiet.',
+      'The bond is stale, usually after a firmware update or a factory reset. Remove the pairing on this computer and on the radio, then pair again.',
+      'The operating system is holding a stale record of it. Choosing it again below forces a fresh scan, which is the only reliable way to find out.',
+      'It is out of range or powered down.'
+    ].forEach(line => ul.append(el('li', { style: 'font-family:var(--sans);font-size:12.5px;margin-bottom:5px' }, line)));
+    box.append(ul);
+    box.append(el('div', { class: 'row' },
+      el('button', {
+        class: 'btn primary', onclick: async () => {
+          try {
+            RECONNECT.exhausted = false;
+            const t = await BleTransport.request({ enableLog: APP.bleLog });
+            await beginSession(t);
+          } catch (err) {
+            const msg = (err && err.message) ? err.message : String(err);
+            if (/User cancelled|chooser/i.test(msg)) { toast('Nothing chosen. If the radio is not in the list, it is not advertising.'); }
+            else toast('Bluetooth: ' + msg, 'bad');
+            paint();
+          }
+        }
+      }, 'Choose the radio again'),
+      el('button', { class: 'btn', onclick: () => { RECONNECT.exhausted = false; RECONNECT.attempt = 0; scheduleReconnect('retried by hand'); paint(); } }, 'Try the same radio again'),
+      el('button', { class: 'btn', onclick: () => { RECONNECT.exhausted = false; paint(); } }, 'Dismiss')));
+    box.append(el('div', { style: 'margin-top:10px;font-family:var(--sans);font-size:12.5px' },
+      'Best diagnostic: plug the radio in over USB and connect to it here. Firmware logs a disconnect reason for every bluetooth drop, and WATCHFIRE decodes it on the debug lane below. That number says exactly why the link went, and it cannot reach you over the link that died.'));
+    p0.inner.append(box);
+  }
+  if ((RECONNECT.stuck || RECONNECT.exhausted) && APP.transport && APP.transport.kind === 'ble') {
+    const outstanding = BleTransport.isConnectOutstanding(APP.transport.device);
+    const box = el('div', { class: 'badbox' },
+      outstanding
+        ? 'The browser is still holding a connection request to this radio that has never finished. A page cannot cancel one, so every further attempt queues behind it and none of them can succeed.'
+        : 'Reconnecting did not succeed after ' + RECONNECT.attempt + ' attempts.');
+    box.append(el('div', { class: 'row', style: 'margin-top:10px' },
+      el('button', {
+        class: 'btn', onclick: () => {
+          if (APP.transport && APP.transport.forget) APP.transport.forget();
+          cancelReconnect();
+          toast('Released. Try connecting again; if it still will not, reload the page.');
+          paint();
+        }
+      }, 'Release and try again'),
+      el('button', { class: 'btn', onclick: () => location.reload() }, 'Reload the page'),
+      el('button', { class: 'btn', onclick: () => { cancelReconnect(); paint(); } }, 'Dismiss')));
+    if (outstanding) {
+      box.append(el('p', { class: 'note', style: 'margin-bottom:0' },
+        'Release drops our record of the request and asks the browser to disconnect, which sometimes clears it. Reloading always does. That is a limit of the web bluetooth API rather than of the radio, and pretending otherwise would waste your time.'));
+    }
+    p0.inner.append(box);
+  }
   if (RECONNECT.timer) {
     p0.inner.append(el('div', { class: 'warnbox' },
       'Reconnecting, attempt ' + RECONNECT.attempt + ' of ' + RECONNECT_BACKOFF_MS.length + '.' +
@@ -3888,6 +4085,17 @@ function stationLink() {
     Array.from(s.partialTypes).slice(0, 40).forEach(t => ul.append(el('li', { class: 'mono' }, t)));
     p3.inner.append(ul);
     wrap.append(p3);
+  }
+
+  /* the radio's own account of a bluetooth drop, if the serial lane carried one */
+  if (s && s.lastBleReason) {
+    const r = s.lastBleReason;
+    const p35 = panel('The radio explained a bluetooth disconnect', relTime(Math.floor(r.t / 1000)));
+    p35.inner.append(el('div', { class: 'okbox' },
+      'Reason ' + r.reason.hex + ' (' + r.reason.raw + '): ' + r.reason.text));
+    p35.inner.append(el('p', { class: 'note' },
+      'Read from the firmware debug lane. This is the radio saying why it ended a bluetooth connection, which is better evidence than anything WATCHFIRE can infer from its own end of the link.'));
+    wrap.append(p35);
   }
 
   /* debug lane */
@@ -7101,6 +7309,56 @@ async function runSelfTest(report) {
     return 'gave up after ' + Math.round(took / 1000) + ' s';
   });
 
+  await ta('bluetooth', 'a retry never stacks a second connection request on one device', async () => {
+    /* A connection request cannot be cancelled from a page. v1.9.0 raced the
+       connect and called disconnect() to "cancel" it, which left an unfinished
+       request behind on every attempt until only a reload could clear them.
+       Retries must therefore wait on the outstanding request, not issue more. */
+    const dev = new SimBleDevice({ faults: { splitFrames: false, debugChatter: false } });
+    let connectCalls = 0;
+    const realConnect = dev.gatt.connect;
+    dev.stall = true;
+    dev.gatt.connect = function () { connectCalls++; return realConnect.apply(dev.gatt, arguments); };
+
+    const attempts = [];
+    for (let i = 0; i < 3; i++) {
+      const t = new BleTransport(dev);
+      const s = new RadioSession();
+      let err = null;
+      try { await s.connect(t); } catch (e) { err = e; }
+      attempts.push({ t: t, err: err });
+      ok(err, 'attempt ' + (i + 1) + ' must fail rather than hang');
+    }
+    eq(connectCalls, 1, 'only one connection request may ever be in flight, saw ' + connectCalls);
+    ok(attempts[1].t.events.some(e => e.kind === 'adopt'), 'the second attempt must adopt the outstanding request');
+    ok(attempts[2].t.events.some(e => e.kind === 'adopt'), 'and so must the third');
+    ok(BleTransport.isConnectOutstanding(dev), 'and the instrument must know a request is still outstanding');
+    ok(/cannot be cancelled from a page/.test(attempts[1].err.message), 'the message must say why, got: ' + attempts[1].err.message);
+    attempts[2].t.forget();
+    eq(BleTransport.isConnectOutstanding(dev), false, 'releasing must clear our record of it');
+    return connectCalls + ' request across 3 attempts';
+  });
+
+  await ta('bluetooth', 'a dropped link does not leave its listener behind', async () => {
+    const dev = new SimBleDevice({ faults: { splitFrames: false, debugChatter: false } });
+    let attached = 0;
+    const realAdd = dev.addEventListener.bind(dev);
+    const realRemove = dev.removeEventListener.bind(dev);
+    dev.addEventListener = (type, fn) => { if (type === 'gattserverdisconnected') attached++; realAdd(type, fn); };
+    dev.removeEventListener = (type, fn) => { if (type === 'gattserverdisconnected') attached--; realRemove(type, fn); };
+    for (let i = 0; i < 3; i++) {
+      const t = new BleTransport(dev);
+      const s = new RadioSession();
+      await s.connect(t);
+      const deadline = Date.now() + 8000;
+      while (s.state !== 'ready' && Date.now() < deadline) await sleep(40);
+      dev.gatt.disconnect();
+      await sleep(80);
+    }
+    eq(attached, 0, 'every dropped link must take its listener with it, ' + attached + ' left attached');
+    return 'no listeners left after 3 drops';
+  });
+
   t('bluetooth', 'the first reconnect waits for the radio to start advertising again', () => {
     ok(RECONNECT_BACKOFF_MS[0] >= 2000, 'a one second first retry lands before the radio is advertising, got ' + RECONNECT_BACKOFF_MS[0]);
     ok(RECONNECT_BACKOFF_MS.length >= 5, 'there must be several attempts');
@@ -7109,6 +7367,32 @@ async function runSelfTest(report) {
     }
     ok(RECONNECT_BACKOFF_MS[RECONNECT_BACKOFF_MS.length - 1] <= 60000, 'and must not become a once a minute background poll');
     return RECONNECT_BACKOFF_MS.length + ' attempts, ' + (RECONNECT_BACKOFF_MS[0] / 1000) + ' s to ' + (RECONNECT_BACKOFF_MS[RECONNECT_BACKOFF_MS.length - 1] / 1000) + ' s';
+  });
+
+  t('bluetooth', 'a firmware disconnect reason decodes to something a person can act on', () => {
+    /* Firmware logs "BLE disconnect reason: N". NimBLE reports HCI originated
+       disconnects as 0x200 | code, so both forms have to decode. */
+    eq(bleDisconnectReason(520).hci, 0x08, 'the NimBLE offset form');
+    eq(bleDisconnectReason(8).hci, 0x08, 'and the bare HCI form');
+    ok(/supervision timeout/.test(bleDisconnectReason(520).text), 'code 8 is a supervision timeout');
+    ok(/stale bond/.test(bleDisconnectReason(518).text), 'code 6 points at the bond');
+    ok(/sleeping/.test(bleDisconnectReason(0x15).text), 'code 15 points at power');
+    ok(/not a code this build recognises/.test(bleDisconnectReason(999).text), 'an unknown code says so rather than guessing');
+    eq(bleDisconnectReason(null), null, 'a non number is not a reason');
+    const fromLog = bleReasonFromLog('INFO  | BLE disconnect reason: 520');
+    ok(fromLog && fromLog.hci === 8, 'it must be pulled out of a log line');
+    eq(bleReasonFromLog('INFO  | Config sent'), null, 'and an ordinary line must not produce one');
+    return '12 codes, both encodings';
+  });
+
+  await ta('bluetooth', 'a disconnect reason on the serial lane is decoded and kept', async () => {
+    const s = new RadioSession();
+    s._pushDebug('INFO  | BLE disconnect reason: 518');
+    ok(s.lastBleReason, 'the reason must be retained for the panel');
+    eq(s.lastBleReason.reason.hci, 6, 'decoded');
+    ok(/PIN or key missing/.test(s.debugLines[0].line), 'and annotated in the lane itself');
+    ok(s.debugLines[0].line.indexOf('INFO  | BLE disconnect reason: 518') === 0, 'without losing or reordering the original text');
+    return 'decoded in place';
   });
 
   t('bluetooth', 'the GATT identifiers match the firmware header', () => {
