@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- WATCHFIRE :: watchfire.html :: v1.11.0 -->
+<!-- WATCHFIRE :: watchfire.html :: v1.13.0 -->
 <html lang="en" data-theme="night">
 <head>
 <meta charset="utf-8">
@@ -876,12 +876,18 @@ defMsg('EnvironmentMetrics', [
   [11, 'ir_lux', 'float'], [12, 'uv_lux', 'float'], [13, 'wind_direction', 'uint32'],
   [14, 'wind_speed', 'float'], [15, 'weight', 'float'], [16, 'wind_gust', 'float'],
   [17, 'wind_lull', 'float'], [18, 'radiation', 'float'], [19, 'rainfall_1h', 'float'],
-  [20, 'rainfall_24h', 'float'], [21, 'soil_moisture', 'uint32'], [22, 'soil_temperature', 'float']
+  [20, 'rainfall_24h', 'float'], [21, 'soil_moisture', 'uint32'], [22, 'soil_temperature', 'float'],
+  [23, 'one_wire_temperature', 'float']
 ]);
 
 defMsg('PowerMetrics', [
   [1, 'ch1_voltage', 'float'], [2, 'ch1_current', 'float'], [3, 'ch2_voltage', 'float'],
-  [4, 'ch2_current', 'float'], [5, 'ch3_voltage', 'float'], [6, 'ch3_current', 'float']
+  [4, 'ch2_current', 'float'], [5, 'ch3_voltage', 'float'], [6, 'ch3_current', 'float'],
+  [7, 'ch4_voltage', 'float'], [8, 'ch4_current', 'float'],
+  [9, 'ch5_voltage', 'float'], [10, 'ch5_current', 'float'],
+  [11, 'ch6_voltage', 'float'], [12, 'ch6_current', 'float'],
+  [13, 'ch7_voltage', 'float'], [14, 'ch7_current', 'float'],
+  [15, 'ch8_voltage', 'float'], [16, 'ch8_current', 'float']
 ]);
 
 defMsg('Telemetry', [
@@ -889,7 +895,11 @@ defMsg('Telemetry', [
   [2, 'device_metrics', 'msg:DeviceMetrics', { oneof: 'variant' }],
   [3, 'environment_metrics', 'msg:EnvironmentMetrics', { oneof: 'variant' }],
   [4, 'air_quality_metrics', 'msg:EnvironmentMetrics', { oneof: 'variant' }],
-  [5, 'power_metrics', 'msg:PowerMetrics', { oneof: 'variant' }]
+  [5, 'power_metrics', 'msg:PowerMetrics', { oneof: 'variant' }],
+  [6, 'local_stats', 'msg:LocalStats', { oneof: 'variant' }],
+  [7, 'health_metrics', 'msg:HealthMetrics', { oneof: 'variant' }],
+  [8, 'host_metrics', 'msg:HostMetrics', { oneof: 'variant' }],
+  [9, 'traffic_management_stats', 'msg:TrafficManagementStats', { oneof: 'variant' }]
 ]);
 
 defMsg('NodeInfo', [
@@ -959,7 +969,10 @@ defMsg('NeighborInfo', [
 defMsg('Waypoint', [
   [1, 'id', 'uint32'], [2, 'latitude_i', 'sfixed32'], [3, 'longitude_i', 'sfixed32'],
   [4, 'expire', 'uint32'], [5, 'locked_to', 'uint32'], [6, 'name', 'string'],
-  [7, 'description', 'string'], [8, 'icon', 'fixed32']
+  [7, 'description', 'string'], [8, 'icon', 'fixed32'],
+  [9, 'geofence_radius', 'uint32'], [10, 'bounding_box', 'msg:BoundingBox'],
+  [11, 'notify_on_enter', 'bool'], [12, 'notify_on_exit', 'bool'],
+  [13, 'notify_favorites_only', 'bool']
 ]);
 
 defMsg('QueueStatus', [
@@ -972,7 +985,12 @@ defMsg('LogRecord', [
   [1, 'message', 'string'], [2, 'time', 'fixed32'], [3, 'source', 'string'], [4, 'level', 'enum:LogLevel']
 ]);
 defMsg('ClientNotification', [
-  [1, 'reply_id', 'uint32'], [2, 'time', 'fixed32'], [3, 'level', 'enum:LogLevel'], [4, 'message', 'string']
+  [1, 'reply_id', 'uint32'], [2, 'time', 'fixed32'], [3, 'level', 'enum:LogLevel'], [4, 'message', 'string'],
+  [11, 'key_verification_number_inform', 'msg:KeyVerificationNumberInform', { oneof: 'payload_variant' }],
+  [12, 'key_verification_number_request', 'msg:KeyVerificationNumberRequest', { oneof: 'payload_variant' }],
+  [13, 'key_verification_final', 'msg:KeyVerificationFinal', { oneof: 'payload_variant' }],
+  [14, 'duplicated_public_key', 'msg:Empty', { oneof: 'payload_variant' }],
+  [15, 'low_entropy_key', 'msg:Empty', { oneof: 'payload_variant' }]
 ]);
 
 /* ---- channel.proto ---- */
@@ -1109,7 +1127,8 @@ defMsg('Config', [
 defMsg('MQTTConfig', [
   [1, 'enabled', 'bool'], [2, 'address', 'string'], [3, 'username', 'string'], [4, 'password', 'string'],
   [5, 'encryption_enabled', 'bool'], [6, 'json_enabled', 'bool'], [7, 'tls_enabled', 'bool'],
-  [8, 'root', 'string'], [9, 'proxy_to_client_enabled', 'bool'], [10, 'map_reporting_enabled', 'bool']
+  [8, 'root', 'string'], [9, 'proxy_to_client_enabled', 'bool'], [10, 'map_reporting_enabled', 'bool'],
+  [11, 'map_report_settings', 'msg:MapReportSettings']
 ]);
 defMsg('SerialConfig', [
   [1, 'enabled', 'bool'], [2, 'echo', 'bool'], [3, 'rxd', 'uint32'], [4, 'txd', 'uint32'],
@@ -1120,7 +1139,10 @@ defMsg('TelemetryConfig', [
   [3, 'environment_measurement_enabled', 'bool'], [4, 'environment_screen_enabled', 'bool'],
   [5, 'environment_display_fahrenheit', 'bool'], [6, 'air_quality_enabled', 'bool'],
   [7, 'air_quality_interval', 'uint32'], [8, 'power_measurement_enabled', 'bool'],
-  [9, 'power_update_interval', 'uint32'], [10, 'power_screen_enabled', 'bool']
+  [9, 'power_update_interval', 'uint32'], [10, 'power_screen_enabled', 'bool'],
+  [11, 'health_measurement_enabled', 'bool'], [12, 'health_update_interval', 'uint32'],
+  [13, 'health_screen_enabled', 'bool'], [14, 'device_telemetry_enabled', 'bool'],
+  [15, 'air_quality_screen_enabled', 'bool']
 ]);
 defMsg('NeighborInfoConfig', [
   [1, 'enabled', 'bool'], [2, 'update_interval', 'uint32'], [3, 'transmit_over_lora', 'bool']
@@ -1190,6 +1212,8 @@ defMsg('ToRadio', [
   [1, 'packet', 'msg:MeshPacket', { oneof: 'payload_variant' }],
   [3, 'want_config_id', 'uint32', { oneof: 'payload_variant' }],
   [4, 'disconnect', 'bool', { oneof: 'payload_variant' }],
+  [5, 'xmodemPacket', 'msg:XModem', { oneof: 'payload_variant' }],
+  [6, 'mqttClientProxyMessage', 'msg:MqttClientProxyMessage', { oneof: 'payload_variant' }],
   [7, 'heartbeat', 'msg:Heartbeat', { oneof: 'payload_variant' }]
 ]);
 
@@ -1205,7 +1229,9 @@ defMsg('FromRadio', [
   [9, 'moduleConfig', 'msg:ModuleConfig', { oneof: 'payload_variant' }],
   [10, 'channel', 'msg:Channel', { oneof: 'payload_variant' }],
   [11, 'queueStatus', 'msg:QueueStatus', { oneof: 'payload_variant' }],
+  [12, 'xmodemPacket', 'msg:XModem', { oneof: 'payload_variant' }],
   [13, 'metadata', 'msg:DeviceMetadata', { oneof: 'payload_variant' }],
+  [14, 'mqttClientProxyMessage', 'msg:MqttClientProxyMessage', { oneof: 'payload_variant' }],
   [15, 'fileInfo', 'msg:FileInfo', { oneof: 'payload_variant' }],
   [16, 'clientNotification', 'msg:ClientNotification', { oneof: 'payload_variant' }],
   [17, 'deviceuiConfig', 'msg:DeviceUIConfig', { oneof: 'payload_variant' }],
@@ -1380,6 +1406,82 @@ defMsg('MeshBeaconConfig', [
   [7, 'broadcast_offer_preset', 'enum:ModemPreset'], [8, 'broadcast_on_channel', 'msg:ChannelSettings'],
   [9, 'broadcast_on_region', 'enum:RegionCode'], [10, 'broadcast_on_preset', 'enum:ModemPreset'],
   [11, 'broadcast_interval_secs', 'uint32'], [13, 'broadcast_targets', 'msg:BroadcastTarget', { rep: true }]
+]);
+
+/* ==========================================================================
+   Tables added 2026-08-11 after a second radio report and a full audit.
+   The Pager reported one unknown field, TelemetryConfig 15. Protobuf only
+   puts non default values on the wire, so one reported field meant one field
+   that happened to be set, not the size of the gap. Every table in this file
+   was then diffed against upstream, and these are what that found.
+   Source: meshtastic/protobufs master, telemetry.proto, mesh.proto,
+   module_config.proto, xmodem.proto.
+   ========================================================================== */
+
+/* An arm that carries no fields of its own. Present so a variant that is only
+   a marker still selects cleanly instead of landing in $unknown. */
+defMsg('Empty', []);
+
+/* telemetry.proto. local_stats is the one that matters most in practice:
+   modern firmware broadcasts it routinely, and without this table every one of
+   those would have arrived partially understood. */
+defMsg('LocalStats', [
+  [1, 'uptime_seconds', 'uint32'], [2, 'channel_utilization', 'float'], [3, 'air_util_tx', 'float'],
+  [4, 'num_packets_tx', 'uint32'], [5, 'num_packets_rx', 'uint32'], [6, 'num_packets_rx_bad', 'uint32'],
+  [7, 'num_online_nodes', 'uint32'], [8, 'num_total_nodes', 'uint32'], [9, 'num_rx_dupe', 'uint32'],
+  [10, 'num_tx_relay', 'uint32'], [11, 'num_tx_relay_canceled', 'uint32'],
+  [12, 'heap_total_bytes', 'uint32'], [13, 'heap_free_bytes', 'uint32'],
+  [14, 'num_tx_dropped', 'uint32'], [15, 'noise_floor', 'int32']
+]);
+
+defMsg('HealthMetrics', [
+  [1, 'heart_bpm', 'uint32'], [2, 'spO2', 'uint32'], [3, 'temperature', 'float']
+]);
+
+defMsg('HostMetrics', [
+  [1, 'uptime_seconds', 'uint32'], [2, 'freemem_bytes', 'uint64'], [3, 'diskfree1_bytes', 'uint64'],
+  [4, 'diskfree2_bytes', 'uint64'], [5, 'diskfree3_bytes', 'uint64'], [6, 'load1', 'uint32'],
+  [7, 'load5', 'uint32'], [8, 'load15', 'uint32'], [9, 'user_string', 'string']
+]);
+
+defMsg('TrafficManagementStats', [
+  [1, 'packets_inspected', 'uint32'], [2, 'position_dedup_drops', 'uint32'],
+  [3, 'nodeinfo_cache_hits', 'uint32'], [4, 'rate_limit_drops', 'uint32'],
+  [5, 'unknown_packet_drops', 'uint32'], [6, 'hop_exhausted_packets', 'uint32'],
+  [7, 'router_hops_preserved', 'uint32']
+]);
+
+/* xmodem.proto, and the MQTT proxy envelope. Both are arms of ToRadio and
+   FromRadio, so a radio using either would otherwise have produced a
+   partially understood frame on the stream itself. */
+defMsg('XModem', [
+  [1, 'control', 'uint32'], [2, 'seq', 'uint32'], [3, 'crc16', 'uint32'], [4, 'buffer', 'bytes']
+]);
+
+defMsg('MqttClientProxyMessage', [
+  [1, 'topic', 'string'], [2, 'data', 'bytes', { oneof: 'payload_variant' }],
+  [3, 'text', 'string', { oneof: 'payload_variant' }], [4, 'retained', 'bool']
+]);
+
+defMsg('MapReportSettings', [
+  [1, 'publish_interval_secs', 'uint32'], [2, 'position_precision', 'uint32'],
+  [3, 'should_report_location', 'bool']
+]);
+
+defMsg('BoundingBox', [
+  [1, 'longitude_west_i', 'sfixed32'], [2, 'latitude_south_i', 'sfixed32'],
+  [3, 'longitude_east_i', 'sfixed32'], [4, 'latitude_north_i', 'sfixed32']
+]);
+
+defMsg('KeyVerificationNumberInform', [
+  [1, 'nonce', 'uint64'], [2, 'remote_longname', 'string'], [3, 'security_number', 'uint32']
+]);
+defMsg('KeyVerificationNumberRequest', [
+  [1, 'nonce', 'uint64'], [2, 'remote_longname', 'string']
+]);
+defMsg('KeyVerificationFinal', [
+  [1, 'nonce', 'uint64'], [2, 'remote_longname', 'string'], [3, 'isSender', 'bool'],
+  [4, 'verification_characters', 'string']
 ]);
 
 /* ==========================================================================
@@ -1905,7 +2007,7 @@ class SimTransport {
     return [
       { $type: 'ModuleConfig', $payload_variant: 'mqtt', mqtt: { $type: 'MQTTConfig', enabled: false, address: 'mqtt.meshtastic.org', root: 'msh' } },
       { $type: 'ModuleConfig', $payload_variant: 'serial', serial: { $type: 'SerialConfig', enabled: false, baud: 0 } },
-      { $type: 'ModuleConfig', $payload_variant: 'telemetry', telemetry: { $type: 'TelemetryConfig', device_update_interval: 1800, environment_measurement_enabled: true, environment_update_interval: 1800 } },
+      { $type: 'ModuleConfig', $payload_variant: 'telemetry', telemetry: { $type: 'TelemetryConfig', device_update_interval: 1800, environment_measurement_enabled: true, environment_update_interval: 1800, health_measurement_enabled: false, device_telemetry_enabled: true, air_quality_screen_enabled: true } },
       { $type: 'ModuleConfig', $payload_variant: 'neighbor_info', neighbor_info: { $type: 'NeighborInfoConfig', enabled: true, update_interval: 7200 } },
       /* The seven sections a real T-Lora Pager reported on 2026-08-11 that this
          build had no tables for. They are here so the case that produced the
@@ -1925,6 +2027,7 @@ class SimTransport {
     this._log('INFO  | Booted, WATCHFIRE simulator, no radio attached');
     this._every(9000, () => this._ambient());
     this._every(31000, () => this._telemetryBeacon());
+    setTimeout(() => { if (this.open_) this._localStatsBeacon(); }, 2600);
   }
 
   async close() {
@@ -2117,6 +2220,14 @@ class SimTransport {
       this._log('INFO  | Wrote ' + variant + ' config');
       return;
     }
+    if (admin.set_module_config) {
+      const variant = admin.set_module_config.$payload_variant;
+      const slot = this.moduleConfig.findIndex(c => c.$payload_variant === variant);
+      if (slot >= 0) this.moduleConfig[slot] = admin.set_module_config;
+      else this.moduleConfig.push(admin.set_module_config);
+      this._log('INFO  | Wrote ' + variant + ' module config');
+      return;
+    }
     if (admin.set_channel) {
       const ch = admin.set_channel;
       this.channels[ch.index] = ch;
@@ -2252,8 +2363,24 @@ class SimTransport {
     });
   }
 
+  _localStatsBeacon() {
+    const now = Math.floor(Date.now() / 1000);
+    const t = {
+      $type: 'Telemetry', time: now, $variant: 'local_stats',
+      local_stats: {
+        $type: 'LocalStats', uptime_seconds: 90000 + Math.floor(this.envPhase || 0),
+        channel_utilization: 4.8, air_util_tx: 1.4, num_packets_tx: 412, num_packets_rx: 3980,
+        num_packets_rx_bad: 7, num_online_nodes: 4, num_total_nodes: 5, num_rx_dupe: 118,
+        num_tx_relay: 63, num_tx_relay_canceled: 9, heap_total_bytes: 262144,
+        heap_free_bytes: 91000, num_tx_dropped: 2, noise_floor: -101
+      }
+    };
+    this._telemetryPacket(this.myNum, now, t);
+  }
+
   _telemetryBeacon() {
     const now = Math.floor(Date.now() / 1000);
+    this._localStatsBeacon();
     this.envPhase = (this.envPhase || 0) + 0.35;
     this._deviceTelemetry(0x4411aa02, now, {
       battery_level: 88 + Math.floor(Math.random() * 8),
@@ -3081,7 +3208,11 @@ class RadioSession {
      Only fields the radio actually sent are recorded, so a gap in a chart is a
      gap in the evidence rather than a zero. */
   recordTelemetry(nodeNum, whenMs, telemetryMsg, origin) {
-    const groups = ['device_metrics', 'environment_metrics', 'air_quality_metrics', 'power_metrics'];
+    /* Every variant Telemetry can carry. local_stats in particular is what
+       modern firmware broadcasts routinely, and leaving it out of this list
+       meant decoding it correctly and then dropping it on the floor. */
+    const groups = ['device_metrics', 'environment_metrics', 'air_quality_metrics', 'power_metrics',
+      'local_stats', 'health_metrics', 'host_metrics', 'traffic_management_stats'];
     const readings = {};
     let found = false;
     groups.forEach(g => {
@@ -3370,6 +3501,21 @@ class RadioSession {
     await this.sendAdmin({ commit_edit_settings: true, $payload_variant: 'commit_edit_settings' }, { withPasskey: true });
   }
 
+  /* Module config takes the same path as device config: begin, set, commit,
+     with the passkey on every step, and the same refusal to write back a
+     section that did not fully decode. */
+  async writeModuleConfig(moduleConfigMsg) {
+    if (moduleConfigMsg.$partial || unknownReport(moduleConfigMsg).length) {
+      throw new Error('this module config holds fields WATCHFIRE does not understand, so it is write blocked');
+    }
+    if (this.passkeyState !== 'held') await this.refreshPasskey();
+    await this.sendAdmin({ begin_edit_settings: true, $payload_variant: 'begin_edit_settings' }, { withPasskey: true });
+    await sleep(120);
+    await this.sendAdmin({ set_module_config: moduleConfigMsg, $payload_variant: 'set_module_config' }, { withPasskey: true });
+    await sleep(120);
+    await this.sendAdmin({ commit_edit_settings: true, $payload_variant: 'commit_edit_settings' }, { withPasskey: true });
+  }
+
   async writeChannel(channelMsg) {
     if (channelMsg.$partial || unknownReport(channelMsg).length) {
       throw new Error('this channel holds fields WATCHFIRE does not understand, so it is write blocked');
@@ -3464,7 +3610,7 @@ async function decryptPayload(psk, packetId, fromNode, cipherBytes) {
    after it, and no eval, ever.
    ========================================================================== */
 
-const VERSION = '1.11.0';
+const VERSION = '1.13.0';
 const BUILD_NOTE = 'All twelve stations are built. Serial and bluetooth have both reached a real radio, a LILYGO T-Lora Pager, on 2026-08-11. Most behaviour beyond the handshake is still unconfirmed.';
 
 function el(tag, attrs) {
@@ -4960,16 +5106,17 @@ function stationCodeplug() {
   }
   dp.inner.append(el('div', { class: 'row', style: 'margin-top:12px' },
     el('button', {
-      class: 'btn primary', disabled: blocked || dt.changes === 0 || isModule,
-      onclick: () => confirmWrite(codeplugPick + ' config', dt.changes, async () => {
+      class: 'btn primary', disabled: blocked || dt.changes === 0,
+      onclick: () => confirmWrite(codeplugPick + (isModule ? ' module config' : ' config'), dt.changes, async () => {
         await backupCodeplug(s, true);
         const toWrite = cloneMsg(draft);
         delete toWrite.$key;
-        await s.writeConfig(toWrite);
+        if (isModule) await s.writeModuleConfig(toWrite);
+        else await s.writeConfig(toWrite);
         toast('Write sent. Watch station 03 for the ack or the NAK.', 'ok');
         paint();
       })
-    }, isModule ? 'Module writes are v1.1' : (dt.changes ? 'Write ' + dt.changes + ' change(s)' : 'No changes')),
+    }, dt.changes ? 'Write ' + dt.changes + ' change(s)' : 'No changes'),
     el('button', { class: 'btn', onclick: () => { APP.configDraft = null; paint(); } }, 'Discard edits')
   ));
   wrap.append(dp);
@@ -5434,7 +5581,22 @@ const METRIC_INFO = {
   ch2_voltage: { unit: 'V', dp: 2, label: 'channel 2 voltage' },
   ch2_current: { unit: 'mA', dp: 2, label: 'channel 2 current' },
   ch3_voltage: { unit: 'V', dp: 2, label: 'channel 3 voltage' },
-  ch3_current: { unit: 'mA', dp: 2, label: 'channel 3 current' }
+  ch3_current: { unit: 'mA', dp: 2, label: 'channel 3 current' },
+  num_packets_tx: { unit: '', dp: 0, label: 'packets sent' },
+  num_packets_rx: { unit: '', dp: 0, label: 'packets received' },
+  num_packets_rx_bad: { unit: '', dp: 0, label: 'packets received bad' },
+  num_online_nodes: { unit: '', dp: 0, label: 'nodes online' },
+  num_total_nodes: { unit: '', dp: 0, label: 'nodes known' },
+  num_rx_dupe: { unit: '', dp: 0, label: 'duplicates received' },
+  num_tx_relay: { unit: '', dp: 0, label: 'packets relayed' },
+  num_tx_relay_canceled: { unit: '', dp: 0, label: 'relays cancelled' },
+  num_tx_dropped: { unit: '', dp: 0, label: 'packets dropped' },
+  heap_total_bytes: { unit: 'B', dp: 0, label: 'heap total' },
+  heap_free_bytes: { unit: 'B', dp: 0, label: 'heap free' },
+  noise_floor: { unit: 'dBm', dp: 0, label: 'noise floor' },
+  heart_bpm: { unit: 'bpm', dp: 0, label: 'heart rate' },
+  spO2: { unit: '%', dp: 0, label: 'blood oxygen' },
+  one_wire_temperature: { unit: '\u00b0C', dp: 2, label: 'temperature, one wire' }
 };
 
 function metricInfo(key) {
@@ -7125,12 +7287,45 @@ async function runSelfTest(report) {
       ok(s.moduleConfig.has(k), 'ModuleConfig arm ' + k);
     });
     eq(s.config.get('device_ui').device_ui.screen_brightness, 153, 'a value inside the new table decodes');
+    /* A second radio report, TelemetryConfig field 15, prompted a full audit of
+       every table against upstream. Protobuf omits default values, so one
+       reported field meant one field that happened to be set, not the size of
+       the gap. These are what the audit found. */
+    const tc = s.moduleConfig.get('telemetry').telemetry;
+    eq(tc.air_quality_screen_enabled, true, 'TelemetryConfig 15, the field the radio reported');
+    eq(tc.device_telemetry_enabled, true, 'TelemetryConfig 14, which the radio did not report because it was set to a default');
+    ok(SCHEMA.Telemetry.byNum[6], 'Telemetry local_stats, which modern firmware broadcasts routinely');
+    ok(SCHEMA.PowerMetrics.byNum[16], 'PowerMetrics channels 4 through 8');
+    ok(SCHEMA.FromRadio.byNum[12] && SCHEMA.FromRadio.byNum[14], 'the two FromRadio arms that were missing');
+    ok(SCHEMA.ToRadio.byNum[5] && SCHEMA.ToRadio.byNum[6], 'and the matching ToRadio arms');
+    ok(SCHEMA.Waypoint.byNum[13], 'Waypoint geofencing fields');
+    ok(SCHEMA.EnvironmentMetrics.byNum[23], 'EnvironmentMetrics one wire temperature');
     eq(s.moduleConfig.get('ambient_lighting').ambient_lighting.red, 255, 'and inside a module table');
     eq(enumName('HardwareModel', s.metadata.hw_model), 'T_LORA_PAGER', 'the hardware model resolves to a name rather than a bare number');
     /* and every one of them must still survive a write gate check */
     ok(unknownReport(s.config.get('device_ui')).length === 0, 'device_ui is fully understood, so it is writable');
     await s.disconnect();
     return '9 previously unknown fields now read';
+  });
+
+  await ta('flow', 'a local_stats broadcast is understood and retained', async () => {
+    const sim = new SimTransport({ faults: { splitFrames: false, debugChatter: false } });
+    const s = new RadioSession();
+    await s.connect(sim);
+    let deadline = Date.now() + 8000;
+    while (s.state !== 'ready' && Date.now() < deadline) await sleep(40);
+    deadline = Date.now() + 6000;
+    let stats = null;
+    while (!stats && Date.now() < deadline) {
+      s.telemetry.forEach(series => series.forEach(x => { if (x.readings.num_packets_rx !== undefined) stats = x; }));
+      if (!stats) await sleep(80);
+    }
+    ok(stats, 'a local_stats reading must reach the telemetry record');
+    eq(stats.readings.num_packets_rx, 3980, 'and carry its counters');
+    eq(stats.readings.noise_floor, -101, 'including a negative one');
+    eq(Array.from(s.partialTypes).join(', '), '', 'and leave nothing partially understood');
+    await s.disconnect();
+    return Object.keys(stats.readings).length + ' counters retained';
   });
 
   await ta('flow', 'a mismatched config_complete_id is noticed', async () => {
@@ -7194,6 +7389,33 @@ async function runSelfTest(report) {
     eq(onRadio.lora.hop_limit, 5, 'hop limit on the radio');
     await s.disconnect();
     return 'passkey held, write landed';
+  });
+
+  await ta('flow', 'a module config write lands on the radio and respects the same gate', async () => {
+    const sim = new SimTransport({ faults: { splitFrames: false, debugChatter: false } });
+    const s = new RadioSession();
+    await s.connect(sim);
+    const deadline = Date.now() + 8000;
+    while (s.state !== 'ready' && Date.now() < deadline) await sleep(40);
+    await s.refreshPasskey();
+    const draft = cloneMsg(s.moduleConfig.get('telemetry'));
+    draft.telemetry.device_update_interval = 3600;
+    draft.telemetry.air_quality_screen_enabled = false;
+    await s.writeModuleConfig(draft);
+    await sleep(500);
+    const onRadio = sim.moduleConfig.find(c => c.$payload_variant === 'telemetry');
+    eq(onRadio.telemetry.device_update_interval, 3600, 'the interval landed');
+    eq(onRadio.telemetry.air_quality_screen_enabled, false, 'and so did a field only added in v1.12.0');
+    /* the same refusal as a device config: a section we could not fully read
+       does not get written back */
+    const bad = cloneMsg(s.moduleConfig.get('mqtt'));
+    bad.mqtt.$unknown = [{ num: 200, wire: 0, raw: Uint8Array.from([0xc0, 0x0c, 0x39]) }];
+    bad.mqtt.$partial = true; bad.$partial = true;
+    let threw = false;
+    try { await s.writeModuleConfig(bad); } catch (e) { threw = true; }
+    ok(threw, 'a partially understood module config must be write blocked');
+    await s.disconnect();
+    return 'wrote telemetry module config, gate holds';
   });
 
   await ta('flow', 'an expired passkey produces a NAK rather than silence', async () => {

@@ -1,6 +1,6 @@
 # WATCHFIRE
 
-**FI-220 :: v1.11.0**
+**FI-220 :: v1.13.0**
 
 A bench for your Meshtastic radio, in one file.
 
@@ -82,6 +82,29 @@ behaves under real conditions rather than only under conditions I invented.
 
 **What it has not confirmed:** everything in Known Limitations below still stands.
 One successful handshake is not a validated instrument.
+
+### Second report, and the audit it triggered
+
+The Pager later reported a single unknown field, `TelemetryConfig#15`. Protobuf
+puts only non default values on the wire, so **one reported field meant one field
+that happened to be set, not the size of the gap.** Rather than fix that one
+field and wait to be told about the next, every table in this build was diffed
+against upstream. That found:
+
+- `TelemetryConfig` 11 to 15, including the reported one.
+- `Telemetry` 6 to 9: `local_stats`, `health_metrics`, `host_metrics`,
+  `traffic_management_stats`. **`local_stats` is the significant one**, because
+  modern firmware broadcasts it routinely, and every one of those would have
+  arrived partially understood.
+- `PowerMetrics` channels 4 through 8, `EnvironmentMetrics` one wire temperature.
+- `FromRadio` 12 and 14, `ToRadio` 5 and 6, so the stream envelopes themselves
+  were incomplete.
+- `Waypoint` geofencing, `ClientNotification` key verification, `MQTTConfig` map
+  report settings.
+
+The audit script is not shipped, but the lesson is: **when a radio reports one
+unknown field, treat it as a sample rather than a bug.** The wire only shows you
+what happened to be set.
 
 ## Bluetooth
 
@@ -180,7 +203,7 @@ the one untested transport.
 | 03 | TRAFFIC | The flight recorder. Every frame in and out, decoded by port, with a field tree and a hex dump on any row. Filter by port, node, direction or text. Export JSON or CSV. |
 | 04 | DISPATCH | Text out and in, with the whole delivery chain shown: sent, queued, ack from the destination, implicit ack from a neighbour, NAK with its reason, or timeout. |
 | 05 | CHANNELS | The channel set as editable data. Generate or paste keys, diff before write, share as a URL and a QR code drawn locally. |
-| 06 | CODEPLUG | Config sections as a schema driven editor with enum names. Back up, diff, write through the admin path, compare the radio against an earlier backup. |
+| 06 | CODEPLUG | Device and module config as a schema driven editor with enum names. Back up, diff, write through the admin path, compare the radio against an earlier backup. |
 | 07 | AIRTIME | Time on air per payload size, effective bitrate, every preset compared, the regional duty cycle budget, what this session has cost the channel, and what a hop limit spends. Pure arithmetic on reported settings, so it is useful with no traffic at all. |
 | 08 | TELEMETRY | Device and environment readings retained for the session and charted in hand drawn SVG. Charts break where readings stop rather than drawing a line through a silence. Samples are filed under the reading time the radio reported, not arrival time. Export CSV or JSON. |
 | 09 | PATHFINDER | Traceroute with both legs reconstructed the way firmware prints them, neighbour reports, and an observed link graph laid out radially with no physics and no randomness. Every edge carries the evidence that put it there and when. |
@@ -365,8 +388,6 @@ Not confirmed at all:
 
 Other limits worth stating plainly:
 
-- **Module config writes are read only.** Module sections display and diff, but
-  the write button is disabled for them.
 - **A raw capture is key material.** It is every byte in both directions, so if
   you write a channel or a codeplug while recording, the capture contains the
   channel key and the admin session passkey in the clear. The station says so
