@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<!-- WATCHFIRE :: ble-probe.html :: v1.0.0
+     A single question, answered on your machine rather than by me guessing:
+     does Web Bluetooth work from a file:// page, and will it see the Pager?
+     Double click this. Nothing here talks to a network. License GPL-3.0 -->
+<html lang="en" data-theme="night">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WATCHFIRE :: Web Bluetooth probe</title>
+<style>
+:root{--ink:#0b0d10;--panel:#12161b;--line:#242d38;--text:#dce3ea;--dim:#94a2b1;--faint:#66727f;
+--ember:#ff9d3d;--signal:#4fc3a1;--alarm:#ff6b60;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+body{margin:0;background:var(--ink);color:var(--text);font-family:var(--mono);font-size:14px;line-height:1.5;padding:22px}
+h1{font-size:14px;letter-spacing:.26em;text-transform:uppercase;margin:0 0 4px}
+.tag{color:var(--faint);font-size:11px;margin-bottom:20px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:14px;margin-bottom:14px;max-width:760px}
+dl{display:grid;grid-template-columns:auto 1fr;gap:5px 16px;margin:0;font-size:12.5px}
+dt{color:var(--faint);letter-spacing:.08em}
+dd{margin:0;word-break:break-word}
+.ok{color:var(--signal)}.bad{color:var(--alarm)}.warn{color:var(--ember)}
+button{min-height:44px;padding:10px 18px;background:var(--ember);border:1px solid var(--ember);color:#1a1206;
+font:inherit;font-weight:700;letter-spacing:.12em;text-transform:uppercase;font-size:11px;border-radius:3px;cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}
+pre{background:var(--ink);border:1px solid var(--line);border-radius:3px;padding:12px;overflow:auto;font-size:11.5px;margin:12px 0 0;white-space:pre-wrap}
+:focus-visible{outline:2px solid #ffd08a;outline-offset:2px}
+</style>
+</head>
+<body>
+<h1>Web Bluetooth probe</h1>
+<div class="tag">the question is whether this works from file://, and only your machine can answer it</div>
+
+<div class="panel">
+  <dl id="env"></dl>
+</div>
+
+<div class="panel">
+  <p style="margin:0 0 12px;color:var(--dim);font-size:12.5px">
+    Wake the Pager and make sure Bluetooth is enabled on it. This asks the browser for a device
+    advertising the Meshtastic service. Whatever happens, the exact result is printed below.
+  </p>
+  <button id="go">Ask for a Meshtastic radio</button>
+  <button id="any" style="background:var(--panel);color:var(--text);border-color:var(--line);font-weight:400">Ask for any device</button>
+  <pre id="out">nothing tried yet</pre>
+</div>
+
+<script>
+"use strict";
+/* Authoritative, read from meshtastic/firmware src/BluetoothCommon.h on 2026-08-11 */
+var MESH_SERVICE = '6ba1b218-15a8-461f-9fa8-5dcae273eafd';
+var TORADIO      = 'f75c76d2-129e-4dad-a1dd-7866124401e7';
+var FROMRADIO    = '2c55e69e-4993-11ed-b878-0242ac120002';
+var FROMNUM      = 'ed9da18c-a800-4f66-a670-aa7547e34453';
+var LOGRADIO     = '5a3d6e49-06e6-4423-9944-e9de8cdf9547';
+
+var out = document.getElementById('out');
+function log(s){ out.textContent += '\n' + s; }
+function set(s){ out.textContent = s; }
+
+(function environment(){
+  var dl = document.getElementById('env');
+  function row(k, v, cls){
+    var dt = document.createElement('dt'); dt.textContent = k;
+    var dd = document.createElement('dd'); dd.textContent = v; if (cls) dd.className = cls;
+    dl.append(dt, dd);
+  }
+  row('page origin', location.protocol + (location.host ? '//' + location.host : ' (no host)'));
+  row('secure context', String(window.isSecureContext), window.isSecureContext ? 'ok' : 'bad');
+  var hasBt = typeof navigator !== 'undefined' && !!navigator.bluetooth;
+  row('navigator.bluetooth', hasBt ? 'present' : 'absent', hasBt ? 'ok' : 'bad');
+  row('navigator.serial', (navigator.serial ? 'present' : 'absent'), navigator.serial ? 'ok' : 'warn');
+  row('user agent', navigator.userAgent);
+  var btn = document.createElement('button');
+  btn.textContent = 'Copy this panel';
+  btn.style.cssText = 'margin-top:14px;background:transparent;color:var(--text);border-color:var(--line);font-weight:400';
+  btn.addEventListener('click', function(){
+    var lines = [];
+    var dts = dl.querySelectorAll('dt'), dds = dl.querySelectorAll('dd');
+    for (var i = 0; i < dts.length; i++) lines.push(dts[i].textContent + ': ' + dds[i].textContent);
+    if (navigator.clipboard) navigator.clipboard.writeText(lines.join('\n'));
+    btn.textContent = 'copied';
+  });
+  dl.parentNode.appendChild(btn);
+  if (hasBt && navigator.bluetooth.getAvailability) {
+    navigator.bluetooth.getAvailability().then(function(a){
+      row('adapter available', String(a), a ? 'ok' : 'bad');
+    }).catch(function(e){ row('adapter available', 'threw: ' + e.name + ', ' + e.message, 'bad'); });
+  }
+  if (!hasBt) {
+    document.getElementById('go').disabled = true;
+    document.getElementById('any').disabled = true;
+    set('navigator.bluetooth is not present in this context. That is the answer: Web Bluetooth is\n' +
+        'unavailable here, and no button will change it. Note what the page origin says above.');
+  }
+})();
+
+async function probe(filtered){
+  set('asking' + (filtered ? ' for a device advertising the Meshtastic service' : ' for any device') + '...');
+  try {
+    var opts = filtered
+      ? { filters: [{ services: [MESH_SERVICE] }], optionalServices: [MESH_SERVICE] }
+      : { acceptAllDevices: true, optionalServices: [MESH_SERVICE] };
+    var device = await navigator.bluetooth.requestDevice(opts);
+    log('chooser returned a device');
+    log('  name: ' + (device.name || '(none advertised)'));
+    log('  id:   ' + device.id);
+    log('connecting to GATT, this is where pairing happens if it is going to');
+    var server = await device.gatt.connect();
+    log('  connected: ' + server.connected);
+    var svc = await server.getPrimaryService(MESH_SERVICE);
+    log('found the Meshtastic service');
+    var names = { };
+    names[TORADIO] = 'ToRadio (write)';
+    names[FROMRADIO] = 'FromRadio (read)';
+    names[FROMNUM] = 'FromNum (notify)';
+    names[LOGRADIO] = 'LogRadio (notify, optional)';
+    for (var uuid in names) {
+      try {
+        var ch = await svc.getCharacteristic(uuid);
+        var props = [];
+        for (var p in ch.properties) if (ch.properties[p]) props.push(p);
+        log('  ' + names[uuid] + ': present, properties ' + props.join(', '));
+      } catch (e) {
+        log('  ' + names[uuid] + ': NOT FOUND (' + e.name + ')');
+      }
+    }
+    log('reading FromRadio once, to see whether a config burst is waiting');
+    try {
+      var ch = await svc.getCharacteristic(FROMRADIO);
+      var v = await ch.readValue();
+      log('  read returned ' + v.byteLength + ' bytes' + (v.byteLength ? '' : ' (empty queue, which is normal before asking for config)'));
+      if (v.byteLength) {
+        var hex = '';
+        for (var i = 0; i < Math.min(v.byteLength, 48); i++) {
+          hex += ('0' + v.getUint8(i).toString(16)).slice(-2) + ' ';
+        }
+        log('  first bytes: ' + hex.trim());
+        log('  note there is no 94 c3 header here. GATT gives the message boundary for free.');
+      }
+    } catch (e) {
+      log('  read failed: ' + e.name + ', ' + e.message);
+    }
+    server.disconnect();
+    log('');
+    log('RESULT: Web Bluetooth works from this page and the radio answered.');
+  } catch (err) {
+    log('');
+    log('FAILED: ' + err.name);
+    log('  ' + err.message);
+    log('');
+    if (/globally disabled/i.test(err.message)) {
+      log('This is a browser level kill switch, not the radio and not this page. Chromium');
+      log('reports it before it ever looks at where the page came from, which means the');
+      log('file:// question is still unanswered. Fix the switch, then run this again.');
+      log('');
+      var ua = navigator.userAgent;
+      if (/Brave/i.test(ua) || (navigator.brave && navigator.brave.isBrave)) {
+        log('Brave disables Web Bluetooth by default.');
+        log('  brave://flags/#brave-web-bluetooth-api  ->  Enabled, then restart.');
+      } else if (/OPR\//.test(ua)) {
+        log('Opera does not ship Web Bluetooth on desktop at all. No flag will turn it on.');
+        log('Use Chrome, Edge or Chromium instead.');
+      } else if (/Linux/i.test(ua) && !/Android/i.test(ua)) {
+        log('On desktop Linux this is usually a build or flag gate.');
+        log('  chrome://flags/#enable-experimental-web-platform-features  ->  Enabled, restart.');
+        log('  Then check chrome://bluetooth-internals can see the adapter and scan.');
+        log('  Some distribution packaged Chromium builds ship it compiled out entirely.');
+      } else {
+        log('Check, in order:');
+        log('  chrome://bluetooth-internals   can it see the adapter and scan?');
+        log('  Settings, Privacy and security, Site settings, Bluetooth devices');
+        log('  chrome://flags/#enable-experimental-web-platform-features');
+        log('  An enterprise policy can also set DefaultWebBluetoothGuardSetting to block it.');
+      }
+    } else if (err.name === 'NotFoundError') {
+      log('NotFoundError usually means the chooser opened and you closed it, or nothing');
+      log('advertising that service was in range. If the chooser never appeared, that is a');
+      log('different and more interesting answer.');
+    } else if (err.name === 'SecurityError' || /origin/i.test(err.message)) {
+      log('This is the origin problem. Web Bluetooth is refusing because of where the page is');
+      log('served from, not because of the radio. That decides the architecture: BLE cannot');
+      log('live in a file:// instrument.');
+    } else if (err.name === 'NotSupportedError' || err.name === 'NetworkError') {
+      log('The connection or pairing failed rather than the permission. Worth trying again with');
+      log('the radio freshly woken, and worth checking whether the OS has it already bonded.');
+    }
+  }
+}
+
+document.getElementById('go').addEventListener('click', function(){ probe(true); });
+document.getElementById('any').addEventListener('click', function(){ probe(false); });
+</script>
+</body>
+</html>
