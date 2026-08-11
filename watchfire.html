@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- WATCHFIRE :: watchfire.html :: v1.10.0 -->
+<!-- WATCHFIRE :: watchfire.html :: v1.11.0 -->
 <html lang="en" data-theme="night">
 <head>
 <meta charset="utf-8">
@@ -2360,6 +2360,21 @@ const BLE_ADVERT_WAIT_MS = 8000;
    stop using does not pin anything. */
 const BLE_PENDING_CONNECT = new WeakMap();
 
+/* Known browser defect, and the reason reconnect has a ceiling here.
+   GoogleChrome/samples issue 668: when the peripheral ends the connection
+   rather than the page calling disconnect(), gatt.connect() never resolves and
+   the requestDevice chooser stops responding as well. Chrome's own automatic
+   reconnect sample reproduces it. Nothing a page can do clears that state.
+   Reloading does. So WATCHFIRE tries briefly, then says so, rather than
+   spending a backoff schedule on a wall and letting you conclude the radio is
+   at fault. */
+const BLE_RECONNECT_KNOWN_ISSUE =
+  'This is a known browser defect rather than a fault in the radio or in this instrument. ' +
+  'When a radio ends the connection itself, Chrome can leave the connection machinery in a ' +
+  'state no page can clear, which also stops the device chooser responding. Chrome\u2019s own ' +
+  'automatic reconnect sample has the same failure (GoogleChrome/samples issue 668). ' +
+  'Reloading the page clears it. Nothing else reliably does.';
+
 /* Firmware logs "BLE disconnect reason: N" on every disconnect, and that number
    says precisely why the link went. It cannot arrive over the link that just
    died, but it does arrive on the USB debug lane, so WATCHFIRE decodes it when
@@ -2685,11 +2700,21 @@ class BleTransport {
     return !!(device && BLE_PENDING_CONNECT.get(device));
   }
 
+  /* Web Bluetooth issue 440: a disconnect without stopping notifications first
+     can leave the device not actually disconnected. Subscriptions are dropped
+     before the link goes wherever we are the ones ending it. */
+  async _unsubscribe() {
+    for (const ch of [this.chars.fromNum, this.chars.logRadio]) {
+      if (!ch) continue;
+      try { await ch.stopNotifications(); } catch (e) { /* already gone with the link */ }
+    }
+  }
+
   async close() {
     this._open = false;
     this._note('close', 'closed by the operator');
     this._detach();
-    try { if (this.chars.fromNum) await this.chars.fromNum.stopNotifications(); } catch (e) {}
+    if (this.device.gatt && this.device.gatt.connected) await this._unsubscribe();
     try { if (this.device.gatt.connected) this.device.gatt.disconnect(); } catch (e) {}
   }
 }
@@ -3439,7 +3464,7 @@ async function decryptPayload(psk, packetId, fromNode, cipherBytes) {
    after it, and no eval, ever.
    ========================================================================== */
 
-const VERSION = '1.10.0';
+const VERSION = '1.11.0';
 const BUILD_NOTE = 'All twelve stations are built. Serial and bluetooth have both reached a real radio, a LILYGO T-Lora Pager, on 2026-08-11. Most behaviour beyond the handshake is still unconfirmed.';
 
 function el(tag, attrs) {
@@ -3729,6 +3754,15 @@ function scheduleReconnect(reason) {
     toast('The browser is still holding an unfinished connection request. More retries cannot get past it.', 'bad');
     return false;
   }
+  /* A connect that timed out is the signature of the known browser defect. One
+     more try in case the radio was simply slow to advertise, then stop. Burning
+     seven attempts over two minutes teaches you nothing and reads like the
+     radio is broken when it is not. */
+  if (RECONNECT.attempt >= 1 && /did not answer|not advertising/.test(reason || '')) {
+    RECONNECT.stuck = true;
+    toast('The radio is not answering. Reloading the page is usually the fix.', 'bad');
+    return false;
+  }
   const wait = RECONNECT_BACKOFF_MS[RECONNECT.attempt];
   RECONNECT.attempt++;
   RECONNECT.lastError = reason || '';
@@ -3970,10 +4004,9 @@ function stationLink() {
       }, 'Release and try again'),
       el('button', { class: 'btn', onclick: () => location.reload() }, 'Reload the page'),
       el('button', { class: 'btn', onclick: () => { cancelReconnect(); paint(); } }, 'Dismiss')));
-    if (outstanding) {
-      box.append(el('p', { class: 'note', style: 'margin-bottom:0' },
-        'Release drops our record of the request and asks the browser to disconnect, which sometimes clears it. Reloading always does. That is a limit of the web bluetooth API rather than of the radio, and pretending otherwise would waste your time.'));
-    }
+    box.append(el('p', { class: 'note' }, BLE_RECONNECT_KNOWN_ISSUE));
+    box.append(el('p', { class: 'note', style: 'margin-bottom:0' },
+      'Release drops our record of the request and asks the browser to disconnect, which occasionally clears it. Reloading always does, and you will not lose a codeplug or a channel set by reloading, because neither is held only in this tab. An open session record in station 11 is lost, so export that first if it matters.'));
     p0.inner.append(box);
   }
   if (RECONNECT.timer) {
@@ -3982,6 +4015,10 @@ function stationLink() {
       (RECONNECT.lastError ? ' Last close: ' + RECONNECT.lastError : ''),
       el('div', { class: 'row', style: 'margin-top:8px' },
         el('button', { class: 'btn', onclick: () => { cancelReconnect(); paint(); } }, 'Stop trying'))));
+  }
+  if (!connected && BleTransport.supported) {
+    p0.inner.append(el('p', { class: 'note' },
+      'Bluetooth reaches the radio and every station works over it, but a link that the radio ends cannot reliably be reconnected without reloading the page. That is a browser defect, not a radio fault, and it is described in the README. For a long bench session the serial wire is the steadier choice.'));
   }
   if (APP.transport && APP.transport.kind === 'ble') {
     p0.inner.append(el('div', { class: 'okbox' },

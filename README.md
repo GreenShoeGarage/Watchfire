@@ -1,6 +1,6 @@
 # WATCHFIRE
 
-**FI-220 :: v1.10.0**
+**FI-220 :: v1.11.0**
 
 A bench for your Meshtastic radio, in one file.
 
@@ -143,6 +143,15 @@ visible in the instrument rather than papered over:
   first.** `watchAdvertisements` is not available everywhere, but where it is, a
   radio that is not there fails immediately and leaves nothing half open, rather
   than being connected to hopefully.
+- **A link the radio ends often cannot be reconnected without reloading the
+  page, and that is a browser defect.** When the peripheral terminates the
+  connection rather than the page calling `disconnect()`, Chrome can leave
+  `gatt.connect()` permanently unresolved and the device chooser unresponsive
+  with it. Chrome's own automatic reconnect sample reproduces this
+  (GoogleChrome/samples issue 668). No page can clear that state; reloading
+  does. WATCHFIRE therefore tries twice and then says so plainly, rather than
+  spending a backoff schedule on a wall and leaving you to conclude the radio is
+  broken. **For a long bench session the serial wire is the steadier transport.**
 - **Retries stop when they cannot help.** If a connection request is still
   outstanding after two attempts, further attempts all queue behind it and none
   can succeed. WATCHFIRE says so and offers the only two levers that exist:
