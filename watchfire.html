@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- WATCHFIRE :: watchfire.html :: v1.8.0 -->
+<!-- WATCHFIRE :: watchfire.html :: v1.9.0 -->
 <html lang="en" data-theme="night">
 <head>
 <meta charset="utf-8">
@@ -2339,6 +2339,13 @@ const BLE_LOGRADIO_LEGACY = '6c6fd238-78fa-436b-aacf-15c5be1ef2e2';
    inside that window rather than at the 300 s the serial link uses. */
 const BLE_HEARTBEAT_MS = 15000;
 
+/* gatt.connect() never times out on its own. If the radio is not advertising,
+   out of range, or still tearing down the previous connection, the promise
+   simply never settles, the link sits in "opening" forever, and because the
+   attempt never fails no retry after it ever runs. One stuck attempt kills the
+   whole backoff chain, so every connect is raced against a clock. */
+const BLE_CONNECT_TIMEOUT_MS = 12000;
+
 class BleTransport {
   constructor(device, opts) {
     opts = opts || {};
@@ -2385,6 +2392,31 @@ class BleTransport {
     return new BleTransport(device, opts);
   }
 
+  _detach() {
+    try { if (this._onDrop) this.device.removeEventListener('gattserverdisconnected', this._onDrop); } catch (e) {}
+  }
+
+  async _connectWithTimeout(ms) {
+    /* A GATT left half open by a previous attempt makes the next connect hang,
+       so it is cleared before asking again rather than hoped about. */
+    try { if (this.device.gatt.connected) this.device.gatt.disconnect(); } catch (e) {}
+    let timer = null;
+    const clock = new Promise((resolve, reject) => {
+      timer = setTimeout(() => {
+        this._note('timeout', 'no answer after ' + (ms / 1000) + ' s, cancelling');
+        /* Cancel the pending connection. Left running it will interfere with
+           every attempt after it. */
+        try { this.device.gatt.disconnect(); } catch (e) {}
+        reject(new Error('the radio did not answer inside ' + (ms / 1000) + ' s and the attempt was cancelled. After a disconnect a radio needs a moment to start advertising again, so this is normal on the first retry and a real problem if it keeps happening.'));
+      }, ms);
+    });
+    try {
+      return await Promise.race([this.device.gatt.connect(), clock]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   _note(kind, detail) {
     const at = this.openedAt ? Date.now() - this.openedAt : 0;
     this.events.push({ at: at, kind: kind, detail: detail || '' });
@@ -2415,17 +2447,29 @@ class BleTransport {
     };
     this.device.addEventListener('gattserverdisconnected', this._onDrop);
 
-    this._note('connect', 'requesting GATT');
-    this.server = await this.device.gatt.connect();
+    this._note('connect', 'requesting GATT, giving it ' + (BLE_CONNECT_TIMEOUT_MS / 1000) + ' s');
+    try {
+      this.server = await this._connectWithTimeout(BLE_CONNECT_TIMEOUT_MS);
+    } catch (err) {
+      this._detach();
+      throw err;
+    }
     /* Pairing happens somewhere in here if it is going to. Give it a moment
        rather than racing it into service discovery, because a refused bond
        surfaces later as a disconnected server and looks like a dead radio. */
     await sleep(600);
     if (!this.device.gatt.connected) {
+      this._detach();
       throw new Error('the radio accepted the connection then dropped it, which is the pairing handshake failing. Pair it in your operating system bluetooth settings first, using the passkey shown on the radio.');
     }
     this._note('paired', 'still connected after the pairing window');
-    const svc = await this.server.getPrimaryService(BLE_SERVICE);
+    let svc;
+    try {
+      svc = await this.server.getPrimaryService(BLE_SERVICE);
+    } catch (err) {
+      this._detach();
+      throw err;
+    }
     this._note('services', 'found the Meshtastic service');
     this.chars.toRadio = await svc.getCharacteristic(BLE_TORADIO);
     this.chars.fromRadio = await svc.getCharacteristic(BLE_FROMRADIO);
@@ -2525,7 +2569,7 @@ class BleTransport {
   async close() {
     this._open = false;
     this._note('close', 'closed by the operator');
-    try { if (this._onDrop) this.device.removeEventListener('gattserverdisconnected', this._onDrop); } catch (e) {}
+    this._detach();
     try { if (this.chars.fromNum) await this.chars.fromNum.stopNotifications(); } catch (e) {}
     try { if (this.device.gatt.connected) this.device.gatt.disconnect(); } catch (e) {}
   }
@@ -2554,7 +2598,14 @@ class SimBleDevice {
     const self = this;
     this.gatt = {
       get connected() { return self.connected; },
-      connect: async () => { self.connected = true; await self.radio.open(); return self._server(); },
+      connect: async () => {
+        /* A radio that is not advertising yet leaves this promise hanging
+           forever, which is exactly the case the timeout exists for. */
+        if (self.stall) return new Promise(function () {});
+        self.connected = true;
+        await self.radio.open();
+        return self._server();
+      },
       disconnect: () => { self.connected = false; self._fire('gattserverdisconnected'); }
     };
   }
@@ -3260,7 +3311,7 @@ async function decryptPayload(psk, packetId, fromNode, cipherBytes) {
    after it, and no eval, ever.
    ========================================================================== */
 
-const VERSION = '1.8.0';
+const VERSION = '1.9.0';
 const BUILD_NOTE = 'All twelve stations are built. Serial and bluetooth have both reached a real radio, a LILYGO T-Lora Pager, on 2026-08-11. Most behaviour beyond the handshake is still unconfirmed.';
 
 function el(tag, attrs) {
@@ -3519,7 +3570,9 @@ function showAbout() {
    Tuesday, so it is handled rather than reported and abandoned. Backoff is
    capped and attempts are finite: an instrument that reconnects forever in a
    background tab is a battery bug. */
-const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 15000, 15000, 30000, 30000];
+/* The first step is not 1 s. After a disconnect the radio needs a moment to
+   start advertising again, and asking too early just burns a connect timeout. */
+const RECONNECT_BACKOFF_MS = [3000, 5000, 8000, 15000, 15000, 30000, 30000];
 const RECONNECT = { enabled: true, attempt: 0, timer: null, deliberate: false, lastError: '' };
 
 function cancelReconnect() {
@@ -3602,7 +3655,8 @@ function paintWire() {
 
 function wireSession(session) {
   session.on('state', (s) => {
-    const map = { idle: 'no radio', opening: 'opening port', handshake: 'reading config', ready: 'ready', closed: 'closed', error: 'fault' };
+    const overAir = APP.transport && APP.transport.kind === 'ble';
+    const map = { idle: 'no radio', opening: overAir ? 'connecting' : 'opening port', handshake: 'reading config', ready: 'ready', closed: 'closed', error: 'fault' };
     setStatus(s.state, map[s.state] || s.state);
     if (s.state === 'ready') toast('Radio ready. ' + session.nodes.size + ' nodes, ' + session.channels.filter(Boolean).length + ' channels, ' + session.config.size + ' config sections read.', 'ok');
     if (s.state === 'error') toast(s.detail || 'link fault', 'bad');
@@ -3682,6 +3736,17 @@ function stationLink() {
   /* connect controls */
   const p0 = panel('Connection');
   const connected = s && (s.state === 'ready' || s.state === 'handshake' || s.state === 'opening');
+  if (s && (s.state === 'opening' || s.state === 'handshake')) {
+    const waited = s.startedAt ? Math.round((Date.now() - s.startedAt) / 1000) : 0;
+    p0.inner.append(el('div', { class: 'warnbox' },
+      (s.state === 'opening' ? 'Opening the link' : 'Reading config') + ', ' + waited + ' s so far.' +
+      (APP.transport && APP.transport.kind === 'ble'
+        ? ' A bluetooth connect is given ' + (BLE_CONNECT_TIMEOUT_MS / 1000) + ' s before it is cancelled, because it will otherwise wait forever for a radio that is not advertising.'
+        : ''),
+      el('div', { class: 'row', style: 'margin-top:8px' },
+        el('button', { class: 'btn', onclick: endSession }, 'Give up on this attempt'))));
+    setTimeout(() => { if (APP.station === 'link') schedulePaint(); }, 1000);
+  }
   p0.inner.append(el('div', { class: 'row' },
     el('button', { class: 'btn primary', disabled: connected, onclick: connectSerial }, 'Choose a serial port'),
     el('label', { class: 'field', style: 'width:150px;margin:0' }, el('span', null, 'Baud'),
@@ -7013,6 +7078,37 @@ async function runSelfTest(report) {
     ok(closed && /after connect/.test(closed), 'and the session must be told the same, got: ' + closed);
     ok(t.events.some(e => e.kind === 'write'), 'writes must be on the timeline too, for comparison');
     return 'timeline holds ' + t.events.length + ' events';
+  });
+
+  await ta('bluetooth', 'a radio that never answers times out instead of hanging the link', async () => {
+    /* gatt.connect() has no timeout of its own. Left alone it waits forever for
+       a radio that is not advertising, the session sits in opening, and because
+       the attempt never fails no retry after it ever runs. */
+    const dev = new SimBleDevice({ faults: { splitFrames: false, debugChatter: false } });
+    dev.stall = true;
+    const t = new BleTransport(dev);
+    const s = new RadioSession();
+    const started = Date.now();
+    let threw = null;
+    const saved = BLE_CONNECT_TIMEOUT_MS;
+    try { await s.connect(t); } catch (e) { threw = e; }
+    const took = Date.now() - started;
+    ok(threw, 'connect must reject rather than never settling');
+    ok(/did not answer/.test(threw.message), 'and say the radio did not answer, got: ' + threw.message);
+    ok(took >= saved - 500, 'it must wait the full window before giving up, waited ' + took + ' ms');
+    ok(took < saved + 4000, 'and not much beyond it, waited ' + took + ' ms');
+    ok(t.events.some(e => e.kind === 'timeout'), 'the timeout must be on the link timeline');
+    return 'gave up after ' + Math.round(took / 1000) + ' s';
+  });
+
+  t('bluetooth', 'the first reconnect waits for the radio to start advertising again', () => {
+    ok(RECONNECT_BACKOFF_MS[0] >= 2000, 'a one second first retry lands before the radio is advertising, got ' + RECONNECT_BACKOFF_MS[0]);
+    ok(RECONNECT_BACKOFF_MS.length >= 5, 'there must be several attempts');
+    for (let i = 1; i < RECONNECT_BACKOFF_MS.length; i++) {
+      ok(RECONNECT_BACKOFF_MS[i] >= RECONNECT_BACKOFF_MS[i - 1], 'backoff must not shrink at step ' + i);
+    }
+    ok(RECONNECT_BACKOFF_MS[RECONNECT_BACKOFF_MS.length - 1] <= 60000, 'and must not become a once a minute background poll');
+    return RECONNECT_BACKOFF_MS.length + ' attempts, ' + (RECONNECT_BACKOFF_MS[0] / 1000) + ' s to ' + (RECONNECT_BACKOFF_MS[RECONNECT_BACKOFF_MS.length - 1] / 1000) + ' s';
   });
 
   t('bluetooth', 'the GATT identifiers match the firmware header', () => {

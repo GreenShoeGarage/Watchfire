@@ -1,6 +1,6 @@
 # WATCHFIRE
 
-**FI-220 :: v1.8.0**
+**FI-220 :: v1.9.0**
 
 A bench for your Meshtastic radio, in one file.
 
@@ -114,9 +114,17 @@ visible in the instrument rather than papered over:
 - **A link timeline** in station 01 records what the link was doing when it went:
   connect, pairing window, service discovery, subscriptions, every write, and the
   drop with how long it lasted and how long since the last thing we sent it.
-- **Reconnect is automatic** over bluetooth, capped backoff of 1, 2, 4, 8, 15,
-  15, 30, 30 seconds, reusing the same device so no chooser and no user gesture
-  is needed. It gives up rather than retrying forever, and can be switched off.
+- **Reconnect is automatic** over bluetooth, capped backoff of 3, 5, 8, 15, 15,
+  30, 30 seconds, reusing the same device so no chooser and no user gesture is
+  needed. It gives up rather than retrying forever, and can be switched off. The
+  first step is deliberately not one second: after a disconnect a radio needs a
+  moment to start advertising again, and asking too early just burns an attempt.
+- **Every connect is raced against a clock.** `gatt.connect()` has no timeout of
+  its own, so a radio that is not advertising leaves the promise unsettled
+  forever. WATCHFIRE gives it 12 seconds, then cancels the pending connection and
+  fails the attempt so the next one can run. Without that, one stuck attempt
+  silently kills the whole retry chain, and the instrument sits on "opening"
+  looking frozen.
 - **The keepalive is different.** An idle Pager dropped an otherwise healthy
   connection 35.8 seconds after connect, having never been sent anything.
   Firmware is explicit that a `ToRadio` is what keeps a radio awake for its
@@ -213,7 +221,7 @@ table.
 
 ## Testing
 
-72 assertions, all green as of this release. The same suite runs from the
+74 assertions, all green as of this release. The same suite runs from the
 **Self test** button in the masthead and from a headless harness.
 
 - **Codec:** varint boundaries, negative int32, zigzag sint32, float and
